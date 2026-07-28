@@ -81,6 +81,21 @@ int main()
     }
 
     {
+        BuildInput input = MakeHeadOnInput(0.0768f);
+        PortalRenderFixGeometry::Polygon polygon;
+        Expect(BuildNearPlaneAperturePolygon(input, polygon),
+            "the official extreme-near path must clamp and retain its render-fix proxy");
+        Expect(polygon.count >= 3,
+            "the official extreme-near proxy must remain drawable");
+
+        input.rejectCameraInsideFrontClip = true;
+        Expect(!BuildNearPlaneAperturePolygon(input, polygon),
+            "the deprecated guard must remain available only for an explicit in-game A/B");
+        Expect(polygon.count == 0,
+            "the deprecated guard A/B must report zero vertices");
+    }
+
+    {
         const BuildInput input = MakeHeadOnInput(2.0f);
         PortalRenderFixGeometry::Polygon polygon;
         Expect(!BuildNearPlaneAperturePolygon(input, polygon),

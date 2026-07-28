@@ -40,6 +40,7 @@ namespace U::PortalFileLog
         "PortalPredictionSync",
         "PortalLocalClamp",
         "PortalCrossing",
+        "PortalVisualTxn",
         "PortalTeleportCommit",
         "PortalContinuity",
         "PortalExitRearm",

@@ -49,6 +49,8 @@ int main()
         "near-clip fix diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalEntryViewHandoff] entry=Blue exit=Orange."),
         "pre-Teleport entry camera handoff diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalVisualTxn] txn=1 stage=main-view-pre-render."),
+        "transaction-level visual continuity diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalOfficialRemoteView] entry=Blue exit=Orange."),
         "official remote-view diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalRenderFix] applied=true portal=Blue."),
@@ -68,6 +70,8 @@ int main()
         "near-clip fix diagnostics must be captured");
     Expect(ShouldCapture("[PortalEntryViewHandoff] entry=Blue exit=Orange."),
         "pre-Teleport entry camera handoff diagnostics must be captured");
+    Expect(ShouldCapture("[PortalVisualTxn] txn=1 stage=main-view-pre-render."),
+        "transaction-level visual continuity diagnostics must be captured");
     Expect(ShouldCapture("[PortalOfficialRemoteView] entry=Blue exit=Orange."),
         "official remote-view diagnostics must be captured");
     Expect(ShouldCapture("[PortalRenderFix] applied=true portal=Blue."),

@@ -1,11 +1,18 @@
 #include "ModelRender.h"
 #include "../../Portal/L4D2_Portal.h"
+#include "../../Portal/PortalNearViewRenderPolicy.h"
 #include "../../Portal/PortalRenderFixRenderer.h"
 #include "../../Hooks/BaseClient/BaseClient.h"
 #include "../Hooks.h"
 #include "../../Util/Logger/Logger.h"
 
 using namespace Hooks;
+
+static int s_mainModelFrame = -1;
+static int s_mainModelDrawOrdinal = 0;
+static int s_lastPortalDrawOrdinal = -1;
+static bool s_nearViewDepthClearPending = false;
+static bool s_nearViewDepthCleared = false;
 
 // 状态管理
 bool g_bDrawingPortalView = false; // 防止在绘制传送门内部世界时，再次触发传送门逻辑，造成无限递归
@@ -63,6 +70,24 @@ void __fastcall ModelRender::ForcedMaterialOverride::Detour(void* ecx, void* edx
 // 模式1: DrawModelExecute中递归渲染 - 完整递归，不丢模型，首次创建有卡顿
 void __fastcall ModelRender::DrawModelExecute::Detour(void* ecx, void* edx, const DrawModelState_t& state, const ModelRenderInfo_t& pInfo, matrix3x4_t* pCustomBoneToWorld)
 {
+    const bool isMainViewModelDraw =
+        G::G_L4D2Portal.m_nPortalRenderDepth == 0;
+    int currentDrawOrdinal = -1;
+    if (isMainViewModelDraw)
+    {
+        const int currentFrame =
+            I::GlobalVars ? I::GlobalVars->framecount : -1;
+        if (currentFrame != s_mainModelFrame)
+        {
+            s_mainModelFrame = currentFrame;
+            s_mainModelDrawOrdinal = 0;
+            s_lastPortalDrawOrdinal = -1;
+            s_nearViewDepthClearPending = false;
+            s_nearViewDepthCleared = false;
+        }
+        currentDrawOrdinal = ++s_mainModelDrawOrdinal;
+    }
+
     // 1. 递归保护：防止画自己
     if (G::G_L4D2Portal.m_nPortalRenderDepth > 0) {
         // RenderPortalViewRecursive 在进入时设置它，退出时清除它。
@@ -183,6 +208,8 @@ void __fastcall ModelRender::DrawModelExecute::Detour(void* ecx, void* edx, cons
 
             IMatRenderContext* pRenderContext = G::G_L4D2Portal.m_pMaterialSystem->GetRenderContext();
             if (pRenderContext && G::G_L4D2Portal.m_pWriteStencilMaterial) {
+                bool suppressLegacyFrameRedraw = false;
+
                 // 根据当前是哪个传送门，选择对应的材质
                 IMaterial* pPortalFrameMaterial = isBluePortal
                     ? I::MaterialSystem->FindMaterial("sprites/blborder", TEXTURE_GROUP_OTHER)
@@ -216,14 +243,61 @@ void __fastcall ModelRender::DrawModelExecute::Detour(void* ecx, void* edx, cons
                 {
                     const CViewSetup& renderFixView =
                         G::G_L4D2Portal.m_vViewStack.back();
-                    PortalRenderFixRenderer::DrawMainViewStencilProxy(
-                        pRenderContext,
-                        G::G_L4D2Portal.m_pWriteStencilMaterial,
-                        renderFixView,
-                        pInfo.origin,
-                        pInfo.angles,
-                        entryPortal->currentScale,
-                        isBluePortal ? "Blue" : "Orange");
+                    const PortalRenderFixRenderer::DrawResult proxyResult =
+                        PortalRenderFixRenderer::DrawMainViewStencilProxy(
+                            pRenderContext,
+                            G::G_L4D2Portal.m_pWriteStencilMaterial,
+                            renderFixView,
+                            pInfo.origin,
+                            pInfo.angles,
+                            entryPortal->currentScale,
+                            isBluePortal ? "Blue" : "Orange");
+                    const bool apertureParticipated =
+                        proxyResult.applied || proxyResult.guardSuppressed;
+                    const PortalNearViewRenderPolicy::FrameContext depthContext{
+                        PortalNearViewRenderPolicy::GetViewmodelDepthClearEnabled(),
+                        apertureParticipated,
+                        proxyResult.eyeDepth,
+                        renderFixView.zNear
+                    };
+                    const PortalNearViewRenderPolicy::FrameContext frameContext{
+                        PortalNearViewRenderPolicy::GetNearFrameGuardEnabled(),
+                        apertureParticipated,
+                        proxyResult.eyeDepth,
+                        renderFixView.zNear
+                    };
+                    if (PortalNearViewRenderPolicy::ShouldClearDepthBeforeViewmodel(
+                            depthContext))
+                    {
+                        s_nearViewDepthClearPending = true;
+                    }
+                    suppressLegacyFrameRedraw =
+                        PortalNearViewRenderPolicy::ShouldSuppressLegacyFrameRedraw(
+                            frameContext);
+                    s_lastPortalDrawOrdinal = currentDrawOrdinal;
+                    static float nextPortalOrderLogTime = -1000.0f;
+                    const float currentTime =
+                        I::EngineClient
+                        ? I::EngineClient->OBSOLETE_Time()
+                        : 0.0f;
+                    if (currentTime >= nextPortalOrderLogTime)
+                    {
+                        nextPortalOrderLogTime = currentTime + 0.25f;
+                        U::LogDebug(
+                            "[PortalRenderFix][DrawOrder] time=%.3f frame=%d phase=%d model=portal portal=%s ordinal=%d proxyApplied=%s guardSuppressed=%s eyeDepth=%.4f zNear=%.3f depthClearPending=%s frameSuppressed=%s.\n",
+                            currentTime,
+                            s_mainModelFrame,
+                            static_cast<int>(
+                                G::G_L4D2Portal.m_PortalTransitionSimulator.GetPhase()),
+                            isBluePortal ? "Blue" : "Orange",
+                            currentDrawOrdinal,
+                            proxyResult.applied ? "true" : "false",
+                            proxyResult.guardSuppressed ? "true" : "false",
+                            proxyResult.eyeDepth,
+                            renderFixView.zNear,
+                            s_nearViewDepthClearPending ? "true" : "false",
+                            suppressLegacyFrameRedraw ? "true" : "false");
+                    }
                 }
 
                 // --- 阶段 2: 将RTT纹理绘制在模板区域内 ---
@@ -244,7 +318,7 @@ void __fastcall ModelRender::DrawModelExecute::Detour(void* ecx, void* edx, cons
                 stencilState.m_bEnable = false;
                 pRenderContext->SetStencilState(stencilState);
 
-                if (pPortalFrameMaterial)
+                if (pPortalFrameMaterial && !suppressLegacyFrameRedraw)
                 {
 
                     // 复制当前的变换矩阵
@@ -267,6 +341,23 @@ void __fastcall ModelRender::DrawModelExecute::Detour(void* ecx, void* edx, cons
                     Table.Original<FN>(Index)(ecx, edx, state, pInfo, &modifiedMatrix);
                     I::ModelRender->ForcedMaterialOverride(nullptr);
                 }
+                else if (suppressLegacyFrameRedraw)
+                {
+                    static float nextFrameSuppressLogTime = -1000.0f;
+                    const float currentTime =
+                        I::EngineClient
+                        ? I::EngineClient->OBSOLETE_Time()
+                        : 0.0f;
+                    if (currentTime >= nextFrameSuppressLogTime)
+                    {
+                        nextFrameSuppressLogTime = currentTime + 0.25f;
+                        U::LogDebug(
+                            "[PortalRenderFix][NearFrame] time=%.3f frame=%d portal=%s action=suppress-legacy-whole-model-redraw.\n",
+                            currentTime,
+                            s_mainModelFrame,
+                            isBluePortal ? "Blue" : "Orange");
+                    }
+                }
             }
         } else {
             
@@ -286,6 +377,52 @@ void __fastcall ModelRender::DrawModelExecute::Detour(void* ecx, void* edx, cons
     }
 
     // 如果不是传送门模型，正常调用原始函数
+    const bool isViewmodel =
+        isMainViewModelDraw
+        && (strstr(modelName, "v_models") != nullptr
+            || strstr(modelName, "/v_") != nullptr);
+    if (isViewmodel
+        && s_nearViewDepthClearPending
+        && !s_nearViewDepthCleared)
+    {
+        IMatRenderContext* pRenderContext =
+            G::G_L4D2Portal.m_pMaterialSystem
+            ? G::G_L4D2Portal.m_pMaterialSystem->GetRenderContext()
+            : nullptr;
+        if (pRenderContext)
+        {
+            pRenderContext->ClearBuffers(false, true, false);
+            s_nearViewDepthCleared = true;
+            U::LogDebug(
+                "[PortalRenderFix][ViewmodelDepth] frame=%d ordinal=%d action=clear-depth-before-viewmodel lastPortalOrdinal=%d modelName=%s.\n",
+                s_mainModelFrame,
+                currentDrawOrdinal,
+                s_lastPortalDrawOrdinal,
+                modelName);
+            pRenderContext->Release();
+        }
+    }
+    if (isViewmodel)
+    {
+        static float nextViewmodelOrderLogTime = -1000.0f;
+        const float currentTime =
+            I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+        if (currentTime >= nextViewmodelOrderLogTime)
+        {
+            nextViewmodelOrderLogTime = currentTime + 0.25f;
+            U::LogDebug(
+                "[PortalRenderFix][DrawOrder] time=%.3f frame=%d phase=%d model=viewmodel ordinal=%d lastPortalOrdinal=%d depthClearPending=%s depthCleared=%s modelName=%s.\n",
+                currentTime,
+                s_mainModelFrame,
+                static_cast<int>(
+                    G::G_L4D2Portal.m_PortalTransitionSimulator.GetPhase()),
+                currentDrawOrdinal,
+                s_lastPortalDrawOrdinal,
+                s_nearViewDepthClearPending ? "true" : "false",
+                s_nearViewDepthCleared ? "true" : "false",
+                modelName);
+        }
+    }
     Table.Original<FN>(Index)(ecx, edx, state, pInfo, pCustomBoneToWorld);
 }
 #endif

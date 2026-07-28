@@ -12,6 +12,7 @@
 #include "../../SDK/L4D2/Interfaces/ModelInfo.h"
 #include "../../SDK/L4D2/Interfaces/ModelRender.h"
 #include "../../SDK/L4D2/Interfaces/IVEngineServer.h"
+#include "../../SDK/L4D2/Interfaces/IInput.h"
 #include "../../SDK/L4D2/Includes/const.h"
 #include "../../Util/Math/Math.h"
 #include "../../Util/Logger/Logger.h"
@@ -23,6 +24,46 @@
 void* g_pClient_this_ptr = nullptr; // 用于存储 RenderView 的真实 this 指针
 
 using namespace Hooks;
+
+namespace
+{
+	struct PortalViewModelState
+	{
+		bool hasLocalPlayer = false;
+		bool drawViewmodel = false;
+		bool hasThirdPersonState = false;
+		bool cameraInThirdPerson = false;
+	};
+
+	PortalViewModelState CapturePortalViewModelState()
+	{
+		PortalViewModelState state;
+		if (I::EngineClient && I::ClientEntityList)
+		{
+			C_TerrorPlayer* localPlayer =
+				reinterpret_cast<C_TerrorPlayer*>(
+					I::ClientEntityList->GetClientEntity(
+						I::EngineClient->GetLocalPlayer()));
+			if (localPlayer)
+			{
+				state.hasLocalPlayer = true;
+				state.drawViewmodel = localPlayer->m_bDrawViewmodel();
+			}
+		}
+
+		if (I::IInput)
+		{
+			bool* thirdPerson = I::IInput->m_fCameraInThirdPerson();
+			if (thirdPerson)
+			{
+				state.hasThirdPersonState = true;
+				state.cameraInThirdPerson = *thirdPerson;
+			}
+		}
+
+		return state;
+	}
+}
 
 void __fastcall BaseClient::LevelInitPreEntity::Detour(void* ecx, void* edx, char const* pMapName)
 {
@@ -115,7 +156,11 @@ void __fastcall BaseClient::RenderView::Detour(void* ecx, void* edx, CViewSetup&
 {
 	G::G_L4D2Portal.m_PortalTransition.ApplyVisualTransition(setup);
 	G::G_L4D2Portal.m_PortalTransition.ApplyPortalNearClipFix(setup);
-	G::G_L4D2Portal.m_PortalTransition.LogRenderEnvironmentSnapshot("main-render", setup);
+	const bool isMainView =
+		!g_bIsRenderingPortalTexture
+		&& G::G_L4D2Portal.m_nPortalRenderDepth == 0;
+	G::G_L4D2Portal.m_PortalTransition.LogRenderEnvironmentSnapshot(
+		"main-render", setup, isMainView);
 	G::G_L4D2Portal.m_PortalTransition.LogVisualPlaneProbe(setup);
 
 	// 每帧开始时，重置状态
@@ -128,8 +173,42 @@ void __fastcall BaseClient::RenderView::Detour(void* ecx, void* edx, CViewSetup&
 	// 保存当前帧的标志
 	G::G_L4D2Portal.m_nClearFlags = nClearFlags;
 
+	const bool traceViewmodelState =
+		G::G_L4D2Portal.m_PortalTransitionSimulator.GetPhase()
+			== PortalTransitionPhase::IntersectingPortal;
+	const PortalViewModelState viewmodelBefore =
+		traceViewmodelState
+		? CapturePortalViewModelState()
+		: PortalViewModelState();
+
 	// 调用原始函数。当它内部渲染到传送门时，会触发 DrawModelExecute
 	Func.Original<FN>()(ecx, edx, setup, hudViewSetup, nClearFlags, whatToDraw);
+
+	if (traceViewmodelState)
+	{
+		static float nextViewmodelStateLogTime = -1000.0f;
+		const float currentTime =
+			I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+		if (currentTime >= nextViewmodelStateLogTime)
+		{
+			nextViewmodelStateLogTime = currentTime + 0.25f;
+			const PortalViewModelState viewmodelAfter =
+				CapturePortalViewModelState();
+			U::LogDebug(
+				"[PortalRenderFix][ViewModelState] time=%.3f frame=%d drawFlag=%s localBefore=%s drawViewmodelBefore=%s thirdPersonBefore=%s localAfter=%s drawViewmodelAfter=%s thirdPersonAfter=%s zNear=%.3f zNearViewmodel=%.3f.\n",
+				currentTime,
+				I::GlobalVars ? I::GlobalVars->framecount : -1,
+				(whatToDraw & RENDERVIEW_DRAWVIEWMODEL) ? "true" : "false",
+				viewmodelBefore.hasLocalPlayer ? "true" : "false",
+				viewmodelBefore.drawViewmodel ? "true" : "false",
+				viewmodelBefore.cameraInThirdPerson ? "true" : "false",
+				viewmodelAfter.hasLocalPlayer ? "true" : "false",
+				viewmodelAfter.drawViewmodel ? "true" : "false",
+				viewmodelAfter.cameraInThirdPerson ? "true" : "false",
+				setup.zNear,
+				setup.zNearViewmodel);
+		}
+	}
 }
 #endif
 
@@ -141,7 +220,10 @@ void __fastcall Hooks::BaseClient::RenderView::Detour(void* ecx, void* edx, CVie
 {
     G::G_L4D2Portal.m_PortalTransition.ApplyVisualTransition(setup);
     G::G_L4D2Portal.m_PortalTransition.ApplyPortalNearClipFix(setup);
-    G::G_L4D2Portal.m_PortalTransition.LogRenderEnvironmentSnapshot("main-render", setup);
+    const bool isMainView =
+        !g_bIsRenderingPortalTexture;
+    G::G_L4D2Portal.m_PortalTransition.LogRenderEnvironmentSnapshot(
+        "main-render", setup, isMainView);
     G::G_L4D2Portal.m_PortalTransition.LogVisualPlaneProbe(setup);
 
     // 1. 如果已经在渲染传送门纹理，或者是递归保护，直接调用原始函数
@@ -207,7 +289,11 @@ void __fastcall Hooks::BaseClient::RenderView::Detour(void* ecx, void* edx, CVie
 {
     G::G_L4D2Portal.m_PortalTransition.ApplyVisualTransition(setup);
     G::G_L4D2Portal.m_PortalTransition.ApplyPortalNearClipFix(setup);
-    G::G_L4D2Portal.m_PortalTransition.LogRenderEnvironmentSnapshot("main-render", setup);
+    const bool isMainView =
+        !g_bIsRenderingPortalTexture
+        && G::G_L4D2Portal.m_nProcessingDepth == 0;
+    G::G_L4D2Portal.m_PortalTransition.LogRenderEnvironmentSnapshot(
+        "main-render", setup, isMainView);
     G::G_L4D2Portal.m_PortalTransition.LogVisualPlaneProbe(setup);
 
     // 0. 初始化

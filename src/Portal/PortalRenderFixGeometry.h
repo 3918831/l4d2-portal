@@ -31,6 +31,7 @@ namespace PortalRenderFixGeometry
         float nearPlaneBias = 0.05f;
         float nearQuadHalfExtent = 40.0f;
         float clipEpsilon = 0.01f;
+        bool rejectCameraInsideFrontClip = false;
     };
 
     struct Polygon

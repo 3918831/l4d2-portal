@@ -12,9 +12,13 @@ namespace PortalRenderFixRenderer
     struct DrawResult
     {
         bool applied = false;
+        bool guardSuppressed = false;
         std::size_t vertexCount = 0;
         float eyeDepth = 0.0f;
     };
+
+    void SetExtremeNearGuardEnabled(bool enabled);
+    bool GetExtremeNearGuardEnabled();
 
     DrawResult DrawMainViewStencilProxy(
         IMatRenderContext* renderContext,

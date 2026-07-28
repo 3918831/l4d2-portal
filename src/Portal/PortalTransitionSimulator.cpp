@@ -75,6 +75,11 @@ namespace
     {
         return std::fabs(a) < std::fabs(b) ? a : b;
     }
+
+    PortalVisualContinuity::Vec3 ToContinuityVec3(const Vector& value)
+    {
+        return { value.x, value.y, value.z };
+    }
 }
 
 void CPortalTransitionSimulator::Reset()
@@ -115,6 +120,7 @@ void CPortalTransitionSimulator::Update(CUserCmd* cmd)
         return;
     }
 
+    m_context.lastCommandNumber = cmd->command_number;
     const float currentTime = I::EngineClient->OBSOLETE_Time();
     C_TerrorPlayer* player = GetLocalPlayer();
     if (!player)
@@ -960,7 +966,54 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
     m_context.hasValidExitPlacement = true;
     m_context.hasSignedDepth = true;
 
-    U::LogInfo("[PortalCrossingTransaction] entry=%s exit=%s cmd=%d path=%s previousEntryDepth=%.3f currentEntryDepth=%.3f commitEntryDepth=%.3f transformedExitDepth=%.3f finalExitDepth=%.3f hasPrevious=%s swept=%s sweepFraction=%.3f.\n",
+    PortalVisualContinuity::Sample continuityCommit;
+    continuityCommit.eyeOrigin = ToContinuityVec3(finalEye);
+    continuityCommit.eyeAngles = ToContinuityVec3(
+        Vector(newAngles.x, newAngles.y, newAngles.z));
+    continuityCommit.playerOrigin = ToContinuityVec3(newOrigin);
+    continuityCommit.velocity = ToContinuityVec3(newVelocity);
+    continuityCommit.hasEyeOrigin = true;
+    continuityCommit.hasEyeAngles = true;
+    continuityCommit.hasPlayerOrigin = true;
+    continuityCommit.hasVelocity = true;
+    continuityCommit.eyeSemantics =
+        PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+    continuityCommit.angleSemantics =
+        PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+    continuityCommit.playerSemantics =
+        PortalVisualContinuity::SampleSemantics::ExitPhysical;
+    continuityCommit.velocitySemantics =
+        PortalVisualContinuity::SampleSemantics::ExitPhysical;
+    continuityCommit.engineTime = currentTime;
+    continuityCommit.traversalEpoch = m_context.traversalEpoch;
+    continuityCommit.commandNumber = m_context.teleportCommandNumber;
+    continuityCommit.frameCount =
+        I::GlobalVars ? I::GlobalVars->framecount : -1;
+    continuityCommit.transitionPhase = static_cast<int>(m_context.phase);
+
+    PortalVisualContinuity::TeleportCommitDetails continuityDetails;
+    continuityDetails.entryName = SideName(probe.side);
+    continuityDetails.exitName = SideName(exitSide);
+    continuityDetails.oldOrigin = ToContinuityVec3(anchor.origin);
+    continuityDetails.newOrigin = ToContinuityVec3(newOrigin);
+    continuityDetails.oldEye = ToContinuityVec3(anchor.eye);
+    continuityDetails.newEye = ToContinuityVec3(finalEye);
+    continuityDetails.oldVelocity = ToContinuityVec3(anchor.velocity);
+    continuityDetails.newVelocity = ToContinuityVec3(newVelocity);
+    continuityDetails.oldAngles = ToContinuityVec3(
+        Vector(sourceAngles.x, sourceAngles.y, sourceAngles.z));
+    continuityDetails.newAngles = ToContinuityVec3(
+        Vector(newAngles.x, newAngles.y, newAngles.z));
+    const std::uint32_t continuityTransactionId =
+        G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.BeginCommittedTeleport(
+            static_cast<int>(probe.side),
+            m_context.traversalEpoch,
+            m_context.teleportCommandNumber,
+            continuityCommit,
+            continuityDetails);
+
+    U::LogInfo("[PortalCrossingTransaction] txn=%u entry=%s exit=%s cmd=%d path=%s previousEntryDepth=%.3f currentEntryDepth=%.3f commitEntryDepth=%.3f transformedExitDepth=%.3f finalExitDepth=%.3f hasPrevious=%s swept=%s sweepFraction=%.3f.\n",
+        continuityTransactionId,
         SideName(probe.side),
         SideName(exitSide),
         m_context.teleportCommandNumber,
@@ -973,7 +1026,8 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
         BoolText(probe.hasPreviousSample),
         BoolText(probe.sweptThroughAperture),
         probe.sweptPlaneFraction);
-    U::LogInfo("[PortalTeleportCommit] committed entry=%s exit=%s cmd=%d clearanceMode=%s rawExitDepth=%.2f hullExtent=%.2f clearancePush=%.2f finalExitDepth=%.2f oldOrigin=(%.1f %.1f %.1f) newOrigin=(%.1f %.1f %.1f) oldEye=(%.1f %.1f %.1f) newEye=(%.1f %.1f %.1f) oldCenter=(%.1f %.1f %.1f) newCenter=(%.1f %.1f %.1f) velocity=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f).\n",
+    U::LogInfo("[PortalTeleportCommit] committed txn=%u entry=%s exit=%s cmd=%d clearanceMode=%s rawExitDepth=%.2f hullExtent=%.2f clearancePush=%.2f finalExitDepth=%.2f oldOrigin=(%.1f %.1f %.1f) newOrigin=(%.1f %.1f %.1f) oldEye=(%.1f %.1f %.1f) newEye=(%.1f %.1f %.1f) oldCenter=(%.1f %.1f %.1f) newCenter=(%.1f %.1f %.1f) velocity=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f).\n",
+        continuityTransactionId,
         SideName(probe.side),
         SideName(exitSide),
         m_context.teleportCommandNumber,
@@ -1070,7 +1124,10 @@ void CPortalTransitionSimulator::SetPhase(PortalTransitionPhase phase, const Por
         G::G_L4D2Portal.m_PortalTransition.RestoreControlledMoveType(player, reason);
 
     if (m_context.phase == PortalTransitionPhase::Idle && phase != PortalTransitionPhase::Idle)
+    {
         m_context.enterTime = currentTime;
+        m_context.traversalEpoch = ++m_nextTraversalEpoch;
+    }
 
     m_context.phase = phase;
     m_context.entrySide = probe ? probe->side : PortalTransitionSide::None;

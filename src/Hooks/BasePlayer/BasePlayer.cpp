@@ -26,7 +26,11 @@ void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* ed
 	// Match Portal's client-side CalcPortalView handoff: once the local eye has
 	// crossed the entry plane, render from its linked-space transform while the
 	// physical movement command is still waiting to commit Teleport.
-	G::G_L4D2Portal.m_PortalTransition.ApplyEntryCameraHandoff(pThis, eyeOrigin, eyeAngles);
+	G::G_L4D2Portal.m_PortalTransition.ApplyEntryCameraHandoff(
+		pThis,
+		eyeOrigin,
+		eyeAngles,
+		fov);
 }
 
 void BasePlayer::Init()

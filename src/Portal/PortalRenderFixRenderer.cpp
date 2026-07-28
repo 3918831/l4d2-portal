@@ -9,12 +9,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 
 namespace
 {
+    std::atomic_bool g_extremeNearGuardEnabled{ false };
+
     enum PortalMaterialPrimitiveType : int
     {
         PortalMaterialPoints = 0,
@@ -456,7 +459,7 @@ namespace
 
     void LogApplied(
         const char* portalName,
-        std::size_t vertexCount,
+        const PortalRenderFixGeometry::Polygon& ndcPolygon,
         float eyeDepth,
         float zNear,
         const MeshDrawDiagnostics& diagnostics)
@@ -473,13 +476,40 @@ namespace
             return;
 
         lastTime = currentTime;
+        float minX = ndcPolygon.vertices[0].x;
+        float maxX = minX;
+        float minY = ndcPolygon.vertices[0].y;
+        float maxY = minY;
+        float signedDoubleArea = 0.0f;
+        for (std::size_t i = 0; i < ndcPolygon.count; ++i)
+        {
+            const Vector& point = ndcPolygon.vertices[i];
+            const Vector& next =
+                ndcPolygon.vertices[(i + 1) % ndcPolygon.count];
+            minX = std::min(minX, point.x);
+            maxX = std::max(maxX, point.x);
+            minY = std::min(minY, point.y);
+            maxY = std::max(maxY, point.y);
+            signedDoubleArea += point.x * next.y - next.x * point.y;
+        }
+        const float ndcArea = std::fabs(signedDoubleArea) * 0.5f;
+        const bool touchesViewportEdge =
+            minX <= -0.999f || maxX >= 0.999f
+            || minY <= -0.999f || maxY >= 0.999f;
         U::PortalFileLog::WriteFormat(
-            "[PortalRenderFix] applied=true portal=%s time=%.3f vertices=%zu eyeDepth=%.4f zNear=%.3f firstVertex=%d firstIndex=%u indexSize=%u firstIndexValue=%u lastIndexValue=%u proxyNdcZ=0.00001 mode=StencilProxyOnly.\n",
+            "[PortalRenderFix] applied=true portal=%s time=%.3f vertices=%zu eyeDepth=%.4f zNear=%.3f ndcBounds=(%.4f %.4f %.4f %.4f) ndcArea=%.4f touchesViewportEdge=%s extremeNearGuard=%s firstVertex=%d firstIndex=%u indexSize=%u firstIndexValue=%u lastIndexValue=%u proxyNdcZ=0.00001 mode=StencilProxyOnly.\n",
             portalName ? portalName : "Unknown",
             currentTime,
-            vertexCount,
+            ndcPolygon.count,
             eyeDepth,
             zNear,
+            minX,
+            maxX,
+            minY,
+            maxY,
+            ndcArea,
+            touchesViewportEdge ? "true" : "false",
+            g_extremeNearGuardEnabled.load(std::memory_order_relaxed) ? "true" : "false",
             diagnostics.firstVertex,
             diagnostics.firstIndex,
             static_cast<unsigned int>(diagnostics.indexSize),
@@ -488,6 +518,43 @@ namespace
             static_cast<unsigned int>(
                 diagnostics.indexWrite.lastIndexValue));
     }
+
+    void LogGuardSuppressed(
+        const char* portalName,
+        float eyeDepth,
+        float frontClipDistance,
+        float zNear)
+    {
+        static float lastBlueTime = -1000.0f;
+        static float lastOrangeTime = -1000.0f;
+        float& lastTime =
+            portalName && std::strcmp(portalName, "Blue") == 0
+            ? lastBlueTime
+            : lastOrangeTime;
+        const float currentTime =
+            I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+        if (currentTime - lastTime < 0.25f)
+            return;
+
+        lastTime = currentTime;
+        U::PortalFileLog::WriteFormat(
+            "[PortalRenderFix] applied=false portal=%s time=%.3f reason=ExtremeNearFrontClipGuard eyeDepth=%.4f frontClipDistance=%.4f zNear=%.3f extremeNearGuard=true mode=StencilProxyOnly.\n",
+            portalName ? portalName : "Unknown",
+            currentTime,
+            eyeDepth,
+            frontClipDistance,
+            zNear);
+    }
+}
+
+void PortalRenderFixRenderer::SetExtremeNearGuardEnabled(bool enabled)
+{
+    g_extremeNearGuardEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool PortalRenderFixRenderer::GetExtremeNearGuardEnabled()
+{
+    return g_extremeNearGuardEnabled.load(std::memory_order_relaxed);
 }
 
 PortalRenderFixRenderer::DrawResult
@@ -525,8 +592,21 @@ PortalRenderFixRenderer::DrawMainViewStencilProxy(
         &input.portalUp);
     input.halfWidth = 32.0f * std::clamp(portalScale, 0.01f, 1.0f);
     input.halfHeight = 54.0f * std::clamp(portalScale, 0.01f, 1.0f);
+    input.rejectCameraInsideFrontClip = GetExtremeNearGuardEnabled();
     result.eyeDepth =
         (view.origin - portalOrigin).Dot(input.portalForward);
+    if (input.rejectCameraInsideFrontClip
+        && std::fabs(result.eyeDepth)
+            <= input.frontClipDistance + input.clipEpsilon)
+    {
+        result.guardSuppressed = true;
+        LogGuardSuppressed(
+            portalName,
+            result.eyeDepth,
+            input.frontClipDistance,
+            view.zNear);
+        return result;
+    }
 
     PortalRenderFixGeometry::Polygon worldPolygon;
     if (!PortalRenderFixGeometry::BuildNearPlaneAperturePolygon(
@@ -554,7 +634,7 @@ PortalRenderFixRenderer::DrawMainViewStencilProxy(
     result.vertexCount = ndcPolygon.count;
     LogApplied(
         portalName,
-        result.vertexCount,
+        ndcPolygon,
         result.eyeDepth,
         view.zNear,
         diagnostics);

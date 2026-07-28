@@ -108,6 +108,11 @@ namespace
         return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
     }
 
+    PortalVisualContinuity::Vec3 ToContinuityVec3(const Vector& value)
+    {
+        return { value.x, value.y, value.z };
+    }
+
     float VectorLengthSqr(const Vector& value)
     {
         return value.x * value.x + value.y * value.y + value.z * value.z;
@@ -208,7 +213,8 @@ void CPortalTransition::Reset()
 bool CPortalTransition::ApplyEntryCameraHandoff(
     C_BasePlayer* player,
     Vector& eyeOrigin,
-    Vector& eyeAngles)
+    Vector& eyeAngles,
+    float fov)
 {
     const PortalTransitionContext& context =
         G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
@@ -276,6 +282,38 @@ bool CPortalTransition::ApplyEntryCameraHandoff(
     eyeAngles.z = transformedAngles.z;
 
     const float currentTime = I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+    PortalVisualContinuity::Sample continuitySample;
+    continuitySample.eyeOrigin = ToContinuityVec3(eyeOrigin);
+    continuitySample.eyeAngles = ToContinuityVec3(eyeAngles);
+    continuitySample.hasEyeOrigin = true;
+    continuitySample.hasEyeAngles = true;
+    continuitySample.fov = fov;
+    continuitySample.hasFov = std::isfinite(fov);
+    continuitySample.engineTime = currentTime;
+    continuitySample.frameCount = I::GlobalVars ? I::GlobalVars->framecount : -1;
+    continuitySample.traversalEpoch = context.traversalEpoch;
+    continuitySample.commandNumber = context.lastCommandNumber;
+    continuitySample.transitionPhase = static_cast<int>(context.phase);
+    continuitySample.eyeSemantics =
+        PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+    continuitySample.angleSemantics =
+        PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+    if (player)
+    {
+        continuitySample.playerOrigin = ToContinuityVec3(player->GetAbsOrigin());
+        continuitySample.velocity = ToContinuityVec3(player->m_vecVelocity());
+        continuitySample.hasPlayerOrigin = true;
+        continuitySample.hasVelocity = true;
+        continuitySample.playerSemantics =
+            PortalVisualContinuity::SampleSemantics::EntryPhysical;
+        continuitySample.velocitySemantics =
+            PortalVisualContinuity::SampleSemantics::EntryPhysical;
+    }
+    G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.CaptureEntryHandoff(
+        static_cast<int>(context.entrySide),
+        context.traversalEpoch,
+        continuitySample);
+
     if (!I::EngineClient || ShouldLog(currentTime, m_nextEntryCameraLogTime, 0.02f))
     {
         U::LogDebug("[PortalEntryViewHandoff] applied=true phase=%s entry=%s exit=%s time=%.3f entryDepth=%.3f exitDepth=%.3f insideAperture=true origin=(%.2f %.2f %.2f)->(%.2f %.2f %.2f) angles=(%.2f %.2f %.2f)->(%.2f %.2f %.2f).\n",
@@ -578,12 +616,55 @@ bool CPortalTransition::TryGetExactExitVisibilityOrigin(
     return true;
 }
 
-void CPortalTransition::LogRenderEnvironmentSnapshot(const char* phase, const CViewSetup& view)
+void CPortalTransition::LogRenderEnvironmentSnapshot(
+    const char* phase,
+    const CViewSetup& view,
+    bool isMainView)
 {
+    C_TerrorPlayer* player = GetLocalPlayer();
+    if (isMainView
+        && G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.IsCapturingMainView())
+    {
+        PortalVisualContinuity::Sample continuitySample;
+        continuitySample.eyeOrigin = ToContinuityVec3(view.origin);
+        continuitySample.eyeAngles = ToContinuityVec3(
+            Vector(view.angles.x, view.angles.y, view.angles.z));
+        continuitySample.hasEyeOrigin = true;
+        continuitySample.hasEyeAngles = true;
+        continuitySample.fov = view.fov;
+        continuitySample.hasFov = std::isfinite(view.fov);
+        continuitySample.engineTime =
+            I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+        continuitySample.frameCount =
+            I::GlobalVars ? I::GlobalVars->framecount : -1;
+        const PortalTransitionContext& context =
+            G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
+        continuitySample.traversalEpoch = context.traversalEpoch;
+        continuitySample.transitionPhase = static_cast<int>(context.phase);
+        continuitySample.eyeSemantics =
+            PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+        continuitySample.angleSemantics =
+            PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+        if (player)
+        {
+            continuitySample.playerOrigin =
+                ToContinuityVec3(player->GetAbsOrigin());
+            continuitySample.velocity =
+                ToContinuityVec3(player->m_vecVelocity());
+            continuitySample.hasPlayerOrigin = true;
+            continuitySample.hasVelocity = true;
+            continuitySample.playerSemantics =
+                PortalVisualContinuity::SampleSemantics::ExitPhysical;
+            continuitySample.velocitySemantics =
+                PortalVisualContinuity::SampleSemantics::ExitPhysical;
+        }
+        G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.CaptureMainViewPreRender(
+            continuitySample);
+    }
+
     if (m_pendingEnvironmentRenderFrames <= 0)
         return;
 
-    C_TerrorPlayer* player = GetLocalPlayer();
     LogEnvironmentSnapshot(phase ? phase : "main-render", player, view.origin, Vector(view.angles.x, view.angles.y, view.angles.z));
     --m_pendingEnvironmentRenderFrames;
 }

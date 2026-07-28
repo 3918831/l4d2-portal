@@ -72,6 +72,7 @@ struct PortalInfo_t
 #include "PortalTransitionSimulator.h"
 #include "PortalCollisionBridge.h"
 #include "PortalStage1Probe.h"
+#include "PortalVisualContinuityDiagnostics.h"
 
 // 缩放曲线计算函数（纯函数，无副作用）
 // 输入 t ∈ [0,1]，输出 ∈ [0,1]
@@ -225,6 +226,7 @@ public:
     CPortalTransitionSimulator m_PortalTransitionSimulator;
     CPortalCollisionBridge m_PortalCollisionBridge;
     CPortalStage1Probe m_PortalStage1Probe;
+    PortalVisualContinuity::Diagnostics m_PortalVisualContinuityDiagnostics;
 
     // 传送门操作冷却时间
     float m_flPortalCooldown = 0.5f;           // 可调节的冷却时间

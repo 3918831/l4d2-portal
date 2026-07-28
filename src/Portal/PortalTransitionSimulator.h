@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "../SDK/SDK.h"
 #include "PortalTransitionDecision.h"
 #include "PortalTransform.h"
@@ -34,6 +36,8 @@ struct PortalTransitionContext
     float lastUpdateTime = 0.0f;
     float signedDepth = 0.0f;
     float cooldownUntil = 0.0f;
+    std::uint32_t traversalEpoch = 0;
+    int lastCommandNumber = 0;
     int teleportCommandNumber = 0;
     bool insideAperture = false;
     bool movingIntoPortal = false;
@@ -117,6 +121,7 @@ private:
     float m_nextProbeLogTime = 0.0f;
     float m_nextPhaseLogTime = 0.0f;
     float m_nextNearMissLogTime = 0.0f;
+    std::uint32_t m_nextTraversalEpoch = 0;
     int m_lastCommittedMovementCommandNumber = 0;
     Vector m_lastCommittedMovementOrigin;
     Vector m_lastCommittedMovementVelocity;

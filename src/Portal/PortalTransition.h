@@ -15,7 +15,11 @@ public:
     void Reset();
     void Update(CUserCmd* cmd);
     void OnFinishMove(C_BasePlayer* player, CUserCmd* cmd, CMoveData* move);
-    bool ApplyEntryCameraHandoff(C_BasePlayer* player, Vector& eyeOrigin, Vector& eyeAngles);
+    bool ApplyEntryCameraHandoff(
+        C_BasePlayer* player,
+        Vector& eyeOrigin,
+        Vector& eyeAngles,
+        float fov);
     void ApplyVisualTransition(CViewSetup& view);
     void ApplyPortalNearClipFix(CViewSetup& view);
     bool TryGetExactExitVisibilityOrigin(
@@ -24,7 +28,10 @@ public:
         Vector* safeOrigin,
         float* signedDepth = nullptr,
         int* safeLeaf = nullptr);
-    void LogRenderEnvironmentSnapshot(const char* phase, const CViewSetup& view);
+    void LogRenderEnvironmentSnapshot(
+        const char* phase,
+        const CViewSetup& view,
+        bool isMainView);
     void LogVisualPlaneProbe(const CViewSetup& view);
     void LogEnvironmentSnapshot(const char* phase, C_TerrorPlayer* player, const Vector& viewOrigin, const Vector& viewAngles, const Vector* referenceOrigin = nullptr);
     void LogHookProbe(const char* domain, const char* stage, const char* point, void* gameMovement, CMoveData* move);

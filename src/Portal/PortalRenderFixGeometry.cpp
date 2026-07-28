@@ -119,6 +119,9 @@ bool PortalRenderFixGeometry::BuildNearPlaneAperturePolygon(
     const float eyeDepth = portalToCamera.Dot(portalForward);
     if (!std::isfinite(eyeDepth)
         || eyeDepth < -1.0f
+        || (input.rejectCameraInsideFrontClip
+            && std::fabs(eyeDepth)
+                <= input.frontClipDistance + input.clipEpsilon)
         || portalToCamera.LenghtSqr() >= input.halfHeight * input.halfHeight)
     {
         return false;

@@ -467,6 +467,7 @@ void L4D2_Portal::PortalInit()
     m_PortalTransitionSimulator.Reset();
     m_PortalCollisionBridge.Reset();
     m_PortalStage1Probe.Reset();
+    m_PortalVisualContinuityDiagnostics.ResetCapture("portal-init");
     U::PortalFileLog::Reset();
     U::LogWarning("[PortalFileLog] writing focused traversal diagnostics to game-root portal_l4d2_traversal.log.\n");
     U::LogWarning("[PortalGModTraversal] focused log capture is ready for local-player traversal work.\n");
@@ -485,6 +486,7 @@ void L4D2_Portal::PortalShutdown()
     m_PortalTransitionSimulator.Reset();
     m_PortalCollisionBridge.Reset();
     m_PortalStage1Probe.Reset();
+    m_PortalVisualContinuityDiagnostics.ResetCapture("portal-shutdown");
 
     // 1. 释放全局材质引用
     if (g_pPortalMaterial)
@@ -1256,6 +1258,7 @@ void L4D2_Portal::StartPortalCloseAnimation(PortalInfo_t* pPortal)
     m_PortalTransitionSimulator.Reset();
     m_PortalCollisionBridge.Reset();
     m_PortalStage1Probe.Reset();
+    m_PortalVisualContinuityDiagnostics.ResetCapture("portal-close");
 
     // 跳过空指针、未激活的、已经缩放到0的、或正在关闭中的传送门
     if (!pPortal || !pPortal->bIsActive || pPortal->currentScale <= 0.0f || pPortal->animState == PORTAL_ANIM_CLOSING) {

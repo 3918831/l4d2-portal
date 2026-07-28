@@ -1,4 +1,6 @@
 #include "PortalBspPhase1.h"
+#include "PortalNearViewRenderPolicy.h"
+#include "PortalRenderFixRenderer.h"
 #include "PortalTransitionDecision.h"
 
 #include "../SDK/L4D2/Includes/convar.h"
@@ -69,6 +71,51 @@ CON_COMMAND(portal_visual_nearclip, "Toggle portal-aware main-view near clip: po
     U::LogInfo("[PortalBsp][Command] command=portal_visual_nearclip result=true nearClipFix=%s.\n",
         enabled ? "true" : "false");
     PortalBspPhase1::LogStatus("console-nearclip-change");
+}
+
+CON_COMMAND(portal_visual_stencilproxy_guard, "Toggle extreme-near stencil-proxy guard: portal_visual_stencilproxy_guard <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_stencilproxy_guard current=%s usage='portal_visual_stencilproxy_guard <0|1>'.\n",
+            PortalRenderFixRenderer::GetExtremeNearGuardEnabled() ? "true" : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalRenderFixRenderer::SetExtremeNearGuardEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_stencilproxy_guard result=true extremeNearGuard=%s.\n",
+        enabled ? "true" : "false");
+}
+
+CON_COMMAND(portal_visual_viewmodel_depthclear, "Toggle official-style near-portal depth clear before viewmodel: portal_visual_viewmodel_depthclear <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_viewmodel_depthclear current=%s usage='portal_visual_viewmodel_depthclear <0|1>'.\n",
+            PortalNearViewRenderPolicy::GetViewmodelDepthClearEnabled() ? "true" : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalNearViewRenderPolicy::SetViewmodelDepthClearEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_viewmodel_depthclear result=true enabled=%s.\n",
+        enabled ? "true" : "false");
+}
+
+CON_COMMAND(portal_visual_nearframe_guard, "Toggle suppression of the legacy whole-portal frame redraw inside zNear: portal_visual_nearframe_guard <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_nearframe_guard current=%s usage='portal_visual_nearframe_guard <0|1>'.\n",
+            PortalNearViewRenderPolicy::GetNearFrameGuardEnabled() ? "true" : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalNearViewRenderPolicy::SetNearFrameGuardEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_nearframe_guard result=true enabled=%s.\n",
+        enabled ? "true" : "false");
 }
 
 CON_COMMAND(portal_visual_exitguard, "Toggle ExactTransform exit visibility/near-clip guard: portal_visual_exitguard <0|1>")

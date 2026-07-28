@@ -194,7 +194,10 @@
     <ClCompile Include="Portal\PortalTransition.cpp" />
     <ClCompile Include="Portal\PortalTransitionDecision.cpp" />
     <ClCompile Include="Portal\PortalTransitionSimulator.cpp" />
+    <ClCompile Include="Portal\PortalVisualContinuityDiagnostics.cpp" />
+    <ClCompile Include="Portal\PortalVisualContinuityTracker.cpp" />
     <ClCompile Include="Portal\PortalTransform.cpp" />
+    <ClCompile Include="Portal\PortalNearViewRenderPolicy.cpp" />
     <ClCompile Include="Portal\PortalRenderFixGeometry.cpp" />
     <ClCompile Include="Portal\PortalRenderFixMeshWriter.cpp" />
     <ClCompile Include="Portal\PortalRenderFixRenderer.cpp" />
@@ -267,7 +270,10 @@
     <ClInclude Include="Portal\PortalTransition.h" />
     <ClInclude Include="Portal\PortalTransitionDecision.h" />
     <ClInclude Include="Portal\PortalTransitionSimulator.h" />
+    <ClInclude Include="Portal\PortalVisualContinuityDiagnostics.h" />
+    <ClInclude Include="Portal\PortalVisualContinuityTracker.h" />
     <ClInclude Include="Portal\PortalTransform.h" />
+    <ClInclude Include="Portal\PortalNearViewRenderPolicy.h" />
     <ClInclude Include="Portal\PortalRenderFixGeometry.h" />
     <ClInclude Include="Portal\PortalRenderFixMeshWriter.h" />
     <ClInclude Include="Portal\PortalRenderFixRenderer.h" />

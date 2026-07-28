@@ -7,7 +7,15 @@ using namespace Hooks;
 
 namespace
 {
-	bool TrySyncCommittedMoveBeforeControlledPrediction(const char* phaseName, CUserCmd* ucmd, CMoveData* move)
+	PortalVisualContinuity::Vec3 ToContinuityVec3(const Vector& value)
+	{
+		return { value.x, value.y, value.z };
+	}
+
+	bool TrySyncCommittedMoveBeforeControlledPrediction(
+		const char* phaseName,
+		CUserCmd* ucmd,
+		CMoveData* move)
 	{
 		if (!ucmd || !move)
 			return false;
@@ -29,35 +37,96 @@ namespace
 		const Vector velocityBefore = move->m_vecVelocity;
 		const Vector commandAnglesBefore = ucmd->viewangles;
 		const float originDeltaSqr = (originBefore - committedOrigin).LenghtSqr();
-		if (!PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(context.phase, originDeltaSqr))
-			return false;
-
-		move->SetAbsOrigin(committedOrigin);
-		move->m_vecVelocity = committedVelocity;
-		move->m_vecViewAngles = committedAngles;
-		move->m_vecAbsViewAngles = committedAngles;
-		move->m_vecAngles = committedAngles;
-		if (PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(context.phase, true))
-			ucmd->viewangles = Vector(committedAngles.x, committedAngles.y, committedAngles.z);
-		if (I::EngineClient)
+		const bool syncApplied =
+			PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(
+				context.phase,
+				originDeltaSqr);
+		if (syncApplied)
 		{
-			Vector engineAngles(committedAngles.x, committedAngles.y, committedAngles.z);
-			I::EngineClient->SetViewAngles(engineAngles);
+			move->SetAbsOrigin(committedOrigin);
+			move->m_vecVelocity = committedVelocity;
+			move->m_vecViewAngles = committedAngles;
+			move->m_vecAbsViewAngles = committedAngles;
+			move->m_vecAngles = committedAngles;
+			if (PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(
+				context.phase,
+				true))
+			{
+				ucmd->viewangles =
+					Vector(committedAngles.x, committedAngles.y, committedAngles.z);
+			}
+			if (I::EngineClient)
+			{
+				Vector engineAngles(
+					committedAngles.x,
+					committedAngles.y,
+					committedAngles.z);
+				I::EngineClient->SetViewAngles(engineAngles);
+			}
 		}
 
-		U::LogInfo("[PortalPredictionSync] phase=%s cmd=%d ctxPhase=%d origin=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) vel=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) delta=%.1f cmdAngles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f).\n",
+		const Vector originAfter = move->GetAbsOrigin();
+		const Vector velocityAfter = move->m_vecVelocity;
+		const Vector commandAnglesAfter = ucmd->viewangles;
+
+		PortalVisualContinuity::Sample continuitySample;
+		continuitySample.playerOrigin = ToContinuityVec3(originAfter);
+		continuitySample.velocity = ToContinuityVec3(velocityAfter);
+		continuitySample.eyeAngles = ToContinuityVec3(commandAnglesAfter);
+		continuitySample.hasPlayerOrigin = true;
+		continuitySample.hasVelocity = true;
+		continuitySample.hasEyeAngles = true;
+		continuitySample.angleSemantics =
+			PortalVisualContinuity::SampleSemantics::ExitViewSpace;
+		continuitySample.playerSemantics =
+			PortalVisualContinuity::SampleSemantics::ExitPhysical;
+		continuitySample.velocitySemantics =
+			PortalVisualContinuity::SampleSemantics::ExitPhysical;
+		continuitySample.engineTime =
+			I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+		continuitySample.frameCount =
+			I::GlobalVars ? I::GlobalVars->framecount : -1;
+		continuitySample.traversalEpoch = context.traversalEpoch;
+		continuitySample.commandNumber = ucmd->command_number;
+		continuitySample.transitionPhase = static_cast<int>(context.phase);
+
+		PortalVisualContinuity::PredictionBoundaryDetails continuityDetails;
+		continuityDetails.syncApplied = syncApplied;
+		continuityDetails.expectedOrigin = ToContinuityVec3(committedOrigin);
+		continuityDetails.expectedVelocity = ToContinuityVec3(committedVelocity);
+		continuityDetails.expectedAngles = ToContinuityVec3(
+			Vector(committedAngles.x, committedAngles.y, committedAngles.z));
+		continuityDetails.beforeOrigin = ToContinuityVec3(originBefore);
+		continuityDetails.afterOrigin = ToContinuityVec3(originAfter);
+		continuityDetails.beforeVelocity = ToContinuityVec3(velocityBefore);
+		continuityDetails.afterVelocity = ToContinuityVec3(velocityAfter);
+		continuityDetails.beforeCommandAngles =
+			ToContinuityVec3(commandAnglesBefore);
+		continuityDetails.afterCommandAngles =
+			ToContinuityVec3(commandAnglesAfter);
+		const std::uint32_t continuityTransactionId =
+			G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.CapturePredictionBoundary(
+				ucmd->command_number,
+				continuitySample,
+				continuityDetails);
+
+		U::LogInfo("[PortalPredictionSync] txn=%u phase=%s cmd=%d ctxPhase=%d syncApplied=%s expectedOrigin=(%.1f %.1f %.1f) moveOrigin=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) expectedVelocity=(%.1f %.1f %.1f) moveVelocity=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) delta=%.1f expectedAngles=(%.1f %.1f %.1f) cmdAngles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f).\n",
+			continuityTransactionId,
 			phaseName ? phaseName : "unknown",
 			ucmd->command_number,
 			static_cast<int>(context.phase),
-			originBefore.x, originBefore.y, originBefore.z,
+			syncApplied ? "true" : "false",
 			committedOrigin.x, committedOrigin.y, committedOrigin.z,
-			velocityBefore.x, velocityBefore.y, velocityBefore.z,
+			originBefore.x, originBefore.y, originBefore.z,
+			originAfter.x, originAfter.y, originAfter.z,
 			committedVelocity.x, committedVelocity.y, committedVelocity.z,
+			velocityBefore.x, velocityBefore.y, velocityBefore.z,
+			velocityAfter.x, velocityAfter.y, velocityAfter.z,
 			std::sqrt(originDeltaSqr),
+			committedAngles.x, committedAngles.y, committedAngles.z,
 			commandAnglesBefore.x, commandAnglesBefore.y, commandAnglesBefore.z,
-			ucmd->viewangles.x, ucmd->viewangles.y, ucmd->viewangles.z,
-			committedAngles.x, committedAngles.y, committedAngles.z);
-		return true;
+			commandAnglesAfter.x, commandAnglesAfter.y, commandAnglesAfter.z);
+		return syncApplied;
 	}
 }
 

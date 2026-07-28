@@ -12,8 +12,7 @@ namespace
 		return { value.x, value.y, value.z };
 	}
 
-	bool TrySyncCommittedMoveBeforeControlledPrediction(
-		const char* phaseName,
+	bool TrySyncCommittedViewAnglesAtPredictionSetup(
 		CUserCmd* ucmd,
 		CMoveData* move)
 	{
@@ -33,28 +32,21 @@ namespace
 			return false;
 		}
 
-		const Vector originBefore = move->GetAbsOrigin();
-		const Vector velocityBefore = move->m_vecVelocity;
 		const Vector commandAnglesBefore = ucmd->viewangles;
-		const float originDeltaSqr = (originBefore - committedOrigin).LenghtSqr();
 		const bool syncApplied =
-			PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(
+			PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
 				context.phase,
-				originDeltaSqr);
+				ucmd->command_number,
+				context.teleportCommandNumber);
 		if (syncApplied)
 		{
-			move->SetAbsOrigin(committedOrigin);
-			move->m_vecVelocity = committedVelocity;
+			// Preserve the existing exit-facing command handoff, but leave
+			// origin and velocity at their normal pre-simulation values.
 			move->m_vecViewAngles = committedAngles;
 			move->m_vecAbsViewAngles = committedAngles;
 			move->m_vecAngles = committedAngles;
-			if (PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(
-				context.phase,
-				true))
-			{
-				ucmd->viewangles =
-					Vector(committedAngles.x, committedAngles.y, committedAngles.z);
-			}
+			ucmd->viewangles =
+				Vector(committedAngles.x, committedAngles.y, committedAngles.z);
 			if (I::EngineClient)
 			{
 				Vector engineAngles(
@@ -65,9 +57,59 @@ namespace
 			}
 		}
 
+		const Vector commandAnglesAfter = ucmd->viewangles;
+		U::LogInfo("[PortalPredictionAngles] phase=setupmove cmd=%d committedCmd=%d ctxPhase=%d syncApplied=%s cmdAngles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) committedAngles=(%.1f %.1f %.1f).\n",
+			ucmd->command_number,
+			context.teleportCommandNumber,
+			static_cast<int>(context.phase),
+			syncApplied ? "true" : "false",
+			commandAnglesBefore.x, commandAnglesBefore.y, commandAnglesBefore.z,
+			commandAnglesAfter.x, commandAnglesAfter.y, commandAnglesAfter.z,
+			committedAngles.x, committedAngles.y, committedAngles.z);
+		return syncApplied;
+	}
+
+	std::uint32_t TrySyncCommittedMoveAtPredictionFinish(
+		CUserCmd* ucmd,
+		CMoveData* move)
+	{
+		if (!ucmd || !move)
+			return 0;
+
+		const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
+		Vector committedOrigin;
+		Vector committedVelocity;
+		QAngle committedAngles;
+		if (!G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetCommittedMovementForCommand(
+			ucmd->command_number,
+			&committedOrigin,
+			&committedVelocity,
+			&committedAngles))
+		{
+			return 0;
+		}
+
+		const Vector originBefore = move->GetAbsOrigin();
+		const Vector velocityBefore = move->m_vecVelocity;
+		const Vector commandAnglesBefore = ucmd->viewangles;
+		const bool syncApplied =
+			PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+				context.phase,
+				ucmd->command_number,
+				context.teleportCommandNumber);
+		if (!syncApplied)
+			return 0;
+
+		// The committed teleport already represents this command's final
+		// movement result. Publish it after ProcessMovement and immediately
+		// before the engine copies CMoveData back to the predicted player.
+		move->SetAbsOrigin(committedOrigin);
+		move->m_vecVelocity = committedVelocity;
+
 		const Vector originAfter = move->GetAbsOrigin();
 		const Vector velocityAfter = move->m_vecVelocity;
 		const Vector commandAnglesAfter = ucmd->viewangles;
+		const float originDeltaSqr = (originBefore - committedOrigin).LenghtSqr();
 
 		PortalVisualContinuity::Sample continuitySample;
 		continuitySample.playerOrigin = ToContinuityVec3(originAfter);
@@ -110,12 +152,11 @@ namespace
 				continuitySample,
 				continuityDetails);
 
-		U::LogInfo("[PortalPredictionSync] txn=%u phase=%s cmd=%d ctxPhase=%d syncApplied=%s expectedOrigin=(%.1f %.1f %.1f) moveOrigin=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) expectedVelocity=(%.1f %.1f %.1f) moveVelocity=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) delta=%.1f expectedAngles=(%.1f %.1f %.1f) cmdAngles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f).\n",
+		U::LogInfo("[PortalPredictionSync] txn=%u phase=finishmove-pre-original cmd=%d committedCmd=%d ctxPhase=%d syncApplied=true expectedOrigin=(%.1f %.1f %.1f) moveOrigin=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) expectedVelocity=(%.1f %.1f %.1f) moveVelocity=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) delta=%.1f expectedAngles=(%.1f %.1f %.1f) cmdAngles=(%.1f %.1f %.1f)->(%.1f %.1f %.1f).\n",
 			continuityTransactionId,
-			phaseName ? phaseName : "unknown",
 			ucmd->command_number,
+			context.teleportCommandNumber,
 			static_cast<int>(context.phase),
-			syncApplied ? "true" : "false",
 			committedOrigin.x, committedOrigin.y, committedOrigin.z,
 			originBefore.x, originBefore.y, originBefore.z,
 			originAfter.x, originAfter.y, originAfter.z,
@@ -126,7 +167,7 @@ namespace
 			committedAngles.x, committedAngles.y, committedAngles.z,
 			commandAnglesBefore.x, commandAnglesBefore.y, commandAnglesBefore.z,
 			commandAnglesAfter.x, commandAnglesAfter.y, commandAnglesAfter.z);
-		return syncApplied;
+		return continuityTransactionId;
 	}
 }
 
@@ -138,7 +179,7 @@ void __fastcall ClientPrediction::RunCommand::Detour(void* ecx, void* edx, C_Bas
 void __fastcall ClientPrediction::SetupMove::Detour(void* ecx, void* edx, C_BasePlayer* player, CUserCmd* ucmd, IMoveHelper* pHelper, CMoveData* move)
 {
 	Table.Original<FN>(Index)(ecx, edx, player, ucmd, pHelper, move);
-	TrySyncCommittedMoveBeforeControlledPrediction("setupmove", ucmd, move);
+	TrySyncCommittedViewAnglesAtPredictionSetup(ucmd, move);
 }
 
 void __fastcall ClientPrediction::FinishMove::Detour(void* ecx, void* edx, C_BasePlayer* player, CUserCmd* ucmd, CMoveData* move)
@@ -148,7 +189,23 @@ void __fastcall ClientPrediction::FinishMove::Detour(void* ecx, void* edx, C_Bas
 		ucmd,
 		move,
 		G::G_L4D2Portal.m_PortalTransitionSimulator);
+	const std::uint32_t continuityTransactionId =
+		TrySyncCommittedMoveAtPredictionFinish(ucmd, move);
 	Table.Original<FN>(Index)(ecx, edx, player, ucmd, move);
+	if (continuityTransactionId != 0 && player && move)
+	{
+		const Vector playerOrigin = player->GetAbsOrigin();
+		const Vector playerVelocity = player->m_vecVelocity();
+		const Vector moveOrigin = move->GetAbsOrigin();
+		const Vector moveVelocity = move->m_vecVelocity;
+		U::LogInfo("[PortalPredictionFinish] txn=%u phase=finishmove-post-original cmd=%d playerOrigin=(%.1f %.1f %.1f) moveOrigin=(%.1f %.1f %.1f) playerVelocity=(%.1f %.1f %.1f) moveVelocity=(%.1f %.1f %.1f).\n",
+			continuityTransactionId,
+			ucmd ? ucmd->command_number : 0,
+			playerOrigin.x, playerOrigin.y, playerOrigin.z,
+			moveOrigin.x, moveOrigin.y, moveOrigin.z,
+			playerVelocity.x, playerVelocity.y, playerVelocity.z,
+			moveVelocity.x, moveVelocity.y, moveVelocity.z);
+	}
 	static float nextMoveTypeProbeTime = 0.0f;
 	const float currentTime = I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
 	if (currentTime >= nextMoveTypeProbeTime)

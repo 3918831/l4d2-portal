@@ -80,21 +80,24 @@ bool PortalTransitionDecision::IsCommittedTeleportPredictionSyncPhase(PortalTran
         || phase == PortalTransitionPhase::Cooldown;
 }
 
-bool PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(
+bool PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
     PortalTransitionPhase phase,
-    float originDeltaSqr)
+    int commandNumber,
+    int committedCommandNumber)
 {
-    constexpr float kCommittedMoveSyncDistance = 48.0f;
     return IsCommittedTeleportPredictionSyncPhase(phase)
-        && originDeltaSqr >= kCommittedMoveSyncDistance * kCommittedMoveSyncDistance;
+        && commandNumber > 0
+        && commandNumber == committedCommandNumber;
 }
 
-bool PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(
+bool PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
     PortalTransitionPhase phase,
-    bool committedMoveSynced)
+    int commandNumber,
+    int committedCommandNumber)
 {
-    return committedMoveSynced
-        && IsCommittedTeleportPredictionSyncPhase(phase);
+    return IsCommittedTeleportPredictionSyncPhase(phase)
+        && commandNumber > 0
+        && commandNumber == committedCommandNumber;
 }
 
 bool PortalTransitionDecision::IsWithinGModWallPortalBounds(

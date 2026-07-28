@@ -440,8 +440,7 @@ bool CPortalTransitionSimulator::TryGetCommittedMovementForCommand(
     if (!m_hasLastCommittedMovement || commandNumber <= 0)
         return false;
 
-    const int commandDelta = commandNumber - m_lastCommittedMovementCommandNumber;
-    if (commandDelta < 0 || commandDelta > 1)
+    if (commandNumber != m_lastCommittedMovementCommandNumber)
         return false;
 
     if (committedOrigin)

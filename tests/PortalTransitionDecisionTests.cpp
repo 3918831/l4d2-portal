@@ -291,31 +291,40 @@ int main()
         "a negative cooldown duration must not move the rearm timestamp backward");
 
     Expect(
-        PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(PortalTransitionPhase::ExitingPortal, 500.0f * 500.0f),
-        "exit controlled prediction must consume committed teleport when predicted origin is still at the entry portal");
+        PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+            PortalTransitionPhase::ExitingPortal, 1521, 1521),
+        "the committed command must publish its teleport result at the prediction finish boundary");
     Expect(
-        PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(PortalTransitionPhase::Cooldown, 500.0f * 500.0f),
-        "the command immediately after exit release may still consume the committed teleport");
+        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+            PortalTransitionPhase::ExitingPortal, 1522, 1521),
+        "the command after the teleport must not be reset to the previous committed result");
     Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(PortalTransitionPhase::ExitingPortal, 8.0f * 8.0f),
-        "exit controlled prediction must not rewrite already-synced movement");
+        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+            PortalTransitionPhase::ExitingPortal, 1520, 1521),
+        "a command before the teleport must not consume a future committed result");
     Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(PortalTransitionPhase::IntersectingPortal, 500.0f * 500.0f),
+        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+            PortalTransitionPhase::IntersectingPortal, 1521, 1521),
         "a new intersection must not consume stale committed teleport movement");
     Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveBeforeControlledMove(PortalTransitionPhase::Idle, 500.0f * 500.0f),
+        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+            PortalTransitionPhase::Idle, 1521, 1521),
         "normal movement must not consume committed teleport sync");
     Expect(
-        PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(PortalTransitionPhase::ExitingPortal, true),
-        "committed exit movement sync must also update user command view angles");
+        PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
+            PortalTransitionPhase::ExitingPortal, 1521, 1521),
+        "the committed command must use exit-facing angles while its movement is simulated");
     Expect(
-        PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(PortalTransitionPhase::Cooldown, true),
-        "cooldown fallback synchronization must update view angles atomically with movement");
+        !PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
+            PortalTransitionPhase::Cooldown, 1522, 1521),
+        "the command after the teleport must keep its own view-angle input");
     Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(PortalTransitionPhase::ExitingPortal, false),
-        "view angles must not be rewritten when committed movement was not consumed");
+        !PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
+            PortalTransitionPhase::ExitingPortal, 0, 0),
+        "invalid command numbers must never qualify for a committed angle handoff");
     Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedViewAnglesWithMove(PortalTransitionPhase::Idle, true),
+        !PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
+            PortalTransitionPhase::Idle, 1521, 1521),
         "normal movement must not rewrite user command view angles");
     Expect(
         PortalTransitionDecision::IsWithinGModWallPortalBounds(16.5f, 0.0f, 0.0f),

@@ -28,8 +28,14 @@ namespace PortalTransitionDecision
     bool ShouldAllowTraversalEntry(PortalTransitionPhase phase, float currentTime, float cooldownUntil);
     float ComputeExitRearmCooldownUntil(float releaseTime, float cooldownDuration);
     bool IsCommittedTeleportPredictionSyncPhase(PortalTransitionPhase phase);
-    bool ShouldSyncCommittedMoveBeforeControlledMove(PortalTransitionPhase phase, float originDeltaSqr);
-    bool ShouldSyncCommittedViewAnglesWithMove(PortalTransitionPhase phase, bool committedMoveSynced);
+    bool ShouldSyncCommittedMoveAtPredictionFinish(
+        PortalTransitionPhase phase,
+        int commandNumber,
+        int committedCommandNumber);
+    bool ShouldSyncCommittedViewAnglesAtPredictionSetup(
+        PortalTransitionPhase phase,
+        int commandNumber,
+        int committedCommandNumber);
     bool IsWithinGModWallPortalBounds(float frontDistance, float feetLocalRight, float feetLocalUp);
     bool IsViewNearPortalPlane(
         float forwardDistance,

@@ -44,10 +44,12 @@ namespace PortalVisualContinuity
         Stage stage = Stage::None;
         Vec3 eyeOrigin;
         Vec3 eyeAngles;
+        Vec3 physicalEye;
         Vec3 playerOrigin;
         Vec3 velocity;
         SampleSemantics eyeSemantics = SampleSemantics::None;
         SampleSemantics angleSemantics = SampleSemantics::None;
+        SampleSemantics physicalEyeSemantics = SampleSemantics::None;
         SampleSemantics playerSemantics = SampleSemantics::None;
         SampleSemantics velocitySemantics = SampleSemantics::None;
         float fov = 0.0f;
@@ -59,6 +61,7 @@ namespace PortalVisualContinuity
         int renderIndex = -1;
         bool hasEyeOrigin = false;
         bool hasEyeAngles = false;
+        bool hasPhysicalEye = false;
         bool hasPlayerOrigin = false;
         bool hasVelocity = false;
         bool hasFov = false;
@@ -92,16 +95,20 @@ namespace PortalVisualContinuity
     {
         float eyePosition = 0.0f;
         float eyeAngle = 0.0f;
+        float viewToPhysicalEyeResidual = 0.0f;
         int eyePositionFromOrdinal = -1;
         int eyePositionToOrdinal = -1;
         int eyeAngleFromOrdinal = -1;
         int eyeAngleToOrdinal = -1;
+        int viewToPhysicalEyeResidualOrdinal = -1;
         Stage eyePositionFromStage = Stage::None;
         Stage eyePositionToStage = Stage::None;
         Stage eyeAngleFromStage = Stage::None;
         Stage eyeAngleToStage = Stage::None;
+        Stage viewToPhysicalEyeResidualStage = Stage::None;
         bool hasEyePosition = false;
         bool hasEyeAngle = false;
+        bool hasViewToPhysicalEyeResidual = false;
     };
 
     struct AppendResult

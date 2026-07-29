@@ -191,6 +191,7 @@
     <ClCompile Include="Portal\PortalStage1Probe.cpp" />
     <ClCompile Include="Portal\PortalPlayerTeleport.cpp" />
     <ClCompile Include="Portal\PortalControlledNoclipMovement.cpp" />
+    <ClCompile Include="Portal\PortalEyeContinuity.cpp" />
     <ClCompile Include="Portal\PortalTransition.cpp" />
     <ClCompile Include="Portal\PortalTransitionDecision.cpp" />
     <ClCompile Include="Portal\PortalTransitionSimulator.cpp" />
@@ -267,6 +268,7 @@
     <ClInclude Include="Portal\PortalStage1Probe.h" />
     <ClInclude Include="Portal\PortalPlayerTeleport.h" />
     <ClInclude Include="Portal\PortalControlledNoclipMovement.h" />
+    <ClInclude Include="Portal\PortalEyeContinuity.h" />
     <ClInclude Include="Portal\PortalTransition.h" />
     <ClInclude Include="Portal\PortalTransitionDecision.h" />
     <ClInclude Include="Portal\PortalTransitionSimulator.h" />

@@ -328,6 +328,19 @@ PortalVisualContinuity::Tracker::Append(const Sample& sample)
             result.delta.eyeAngleFromStage;
         m_maximum.eyeAngleToStage = sample.stage;
     }
+    if (sample.hasEyeOrigin && sample.hasPhysicalEye)
+    {
+        const float residual =
+            Length(sample.eyeOrigin, sample.physicalEye);
+        if (!m_maximum.hasViewToPhysicalEyeResidual
+            || residual > m_maximum.viewToPhysicalEyeResidual)
+        {
+            m_maximum.hasViewToPhysicalEyeResidual = true;
+            m_maximum.viewToPhysicalEyeResidual = residual;
+            m_maximum.viewToPhysicalEyeResidualOrdinal = m_sampleCount;
+            m_maximum.viewToPhysicalEyeResidualStage = sample.stage;
+        }
+    }
 
     m_samples[m_sampleCount++] = sample;
     result.maximum = m_maximum;

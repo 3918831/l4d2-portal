@@ -1,5 +1,7 @@
 #include "PortalVisualContinuityDiagnostics.h"
 
+#include <cmath>
+
 #include "../Util/Logger/PortalFileLog.h"
 
 namespace
@@ -7,6 +9,16 @@ namespace
     const char* BoolText(bool value)
     {
         return value ? "true" : "false";
+    }
+
+    float Distance(
+        const PortalVisualContinuity::Vec3& from,
+        const PortalVisualContinuity::Vec3& to)
+    {
+        const float x = to.x - from.x;
+        const float y = to.y - from.y;
+        const float z = to.z - from.z;
+        return std::sqrt(x * x + y * y + z * z);
     }
 }
 
@@ -135,7 +147,7 @@ std::uint32_t PortalVisualContinuity::Diagnostics::CaptureMainViewPreRender(
     if (result.completed)
     {
         U::PortalFileLog::WriteFormat(
-            "[PortalVisualTxn] txn=%u stage=summary samples=%d mainViewSamples=%d eyePositionComparable=%s maxEyePositionDelta=%.4f maxEyePositionPair=%s[%d]->%s[%d] eyeAngleComparable=%s maxEyeAngleDelta=%.4f maxEyeAnglePair=%s[%d]->%s[%d].\n",
+            "[PortalVisualTxn] txn=%u stage=summary samples=%d mainViewSamples=%d eyePositionComparable=%s maxEyePositionDelta=%.4f maxEyePositionPair=%s[%d]->%s[%d] eyeAngleComparable=%s maxEyeAngleDelta=%.4f maxEyeAnglePair=%s[%d]->%s[%d] viewPhysicalComparable=%s maxViewPhysicalEyeResidual=%.4f maxViewPhysicalEyeAt=%s[%d].\n",
             result.transactionId,
             result.ordinal + 1,
             Tracker::kMainViewSampleCount,
@@ -150,7 +162,11 @@ std::uint32_t PortalVisualContinuity::Diagnostics::CaptureMainViewPreRender(
             StageName(result.maximum.eyeAngleFromStage),
             result.maximum.eyeAngleFromOrdinal,
             StageName(result.maximum.eyeAngleToStage),
-            result.maximum.eyeAngleToOrdinal);
+            result.maximum.eyeAngleToOrdinal,
+            BoolText(result.maximum.hasViewToPhysicalEyeResidual),
+            result.maximum.viewToPhysicalEyeResidual,
+            StageName(result.maximum.viewToPhysicalEyeResidualStage),
+            result.maximum.viewToPhysicalEyeResidualOrdinal);
     }
     return result.transactionId;
 }
@@ -160,8 +176,14 @@ void PortalVisualContinuity::Diagnostics::LogSample(
     int ordinal,
     const Sample& sample) const
 {
+    const bool hasViewPhysicalResidual =
+        sample.hasEyeOrigin && sample.hasPhysicalEye;
+    const float viewPhysicalResidual =
+        hasViewPhysicalResidual
+        ? Distance(sample.eyeOrigin, sample.physicalEye)
+        : 0.0f;
     U::PortalFileLog::WriteFormat(
-        "[PortalVisualTxn] txn=%u stage=%s ordinal=%d renderIndex=%d epoch=%u cmd=%d time=%.6f frame=%d transitionPhase=%d hasEye=%s eye=(%.3f %.3f %.3f) eyeSemantics=%s hasAngles=%s eyeAngles=(%.3f %.3f %.3f) angleSemantics=%s hasPlayer=%s playerOrigin=(%.3f %.3f %.3f) playerSemantics=%s hasVelocity=%s velocity=(%.3f %.3f %.3f) velocitySemantics=%s hasFov=%s fov=%.3f.\n",
+        "[PortalVisualTxn] txn=%u stage=%s ordinal=%d renderIndex=%d epoch=%u cmd=%d time=%.6f frame=%d transitionPhase=%d hasEye=%s eye=(%.3f %.3f %.3f) eyeSemantics=%s hasAngles=%s eyeAngles=(%.3f %.3f %.3f) angleSemantics=%s hasPhysicalEye=%s physicalEye=(%.3f %.3f %.3f) physicalEyeSemantics=%s viewPhysicalComparable=%s viewPhysicalResidual=%.4f hasPlayer=%s playerOrigin=(%.3f %.3f %.3f) playerSemantics=%s hasVelocity=%s velocity=(%.3f %.3f %.3f) velocitySemantics=%s hasFov=%s fov=%.3f.\n",
         transactionId,
         StageName(sample.stage),
         ordinal,
@@ -177,6 +199,11 @@ void PortalVisualContinuity::Diagnostics::LogSample(
         BoolText(sample.hasEyeAngles),
         sample.eyeAngles.x, sample.eyeAngles.y, sample.eyeAngles.z,
         SemanticsName(sample.angleSemantics),
+        BoolText(sample.hasPhysicalEye),
+        sample.physicalEye.x, sample.physicalEye.y, sample.physicalEye.z,
+        SemanticsName(sample.physicalEyeSemantics),
+        BoolText(hasViewPhysicalResidual),
+        viewPhysicalResidual,
         BoolText(sample.hasPlayerOrigin),
         sample.playerOrigin.x, sample.playerOrigin.y, sample.playerOrigin.z,
         SemanticsName(sample.playerSemantics),

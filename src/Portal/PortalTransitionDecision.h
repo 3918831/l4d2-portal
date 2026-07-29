@@ -76,6 +76,8 @@ namespace PortalTransitionDecision
 
     bool GetEntryCameraHandoffEnabled();
     void SetEntryCameraHandoffEnabled(bool enabled);
+    bool GetPortalEyeContinuityEnabled();
+    void SetPortalEyeContinuityEnabled(bool enabled);
     bool ShouldApplyEntryCameraHandoff(
         bool enabled,
         PortalTransitionPhase phase,

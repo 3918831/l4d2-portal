@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../SDK/SDK.h"
+#include "PortalEyeContinuity.h"
 #include "PortalTransform.h"
 
 class C_TerrorPlayer;
@@ -20,6 +21,17 @@ public:
         Vector& eyeOrigin,
         Vector& eyeAngles,
         float fov);
+    bool PublishPortalEyeTeleport(
+        const matrix3x4_t& entryToExit,
+        const Vector& exitPlaneOrigin,
+        const Vector& exitPlaneNormal,
+        std::uint32_t traversalEpoch,
+        int commandNumber,
+        std::uint32_t transactionId);
+    bool ApplyPortalEyeContinuity(
+        C_BasePlayer* player,
+        Vector& eyeOrigin,
+        const Vector& eyeAngles);
     void ApplyVisualTransition(CViewSetup& view);
     void ApplyPortalNearClipFix(CViewSetup& view);
     bool TryGetExactExitVisibilityOrigin(
@@ -139,6 +151,11 @@ private:
     ControlledMoveTypeState m_controlledMoveType;
     VisualTransitionState m_visualTransition;
     ToneTransitionState m_toneTransition;
+    PortalEyeContinuity::State m_eyeContinuity;
+    std::uint32_t m_eyeContinuityTransactionId = 0;
+    int m_eyeContinuityLogFramesRemaining = 0;
+    int m_eyeContinuityLastCalcViewFrame = -1;
+    int m_eyeContinuityCalcViewCallOrdinal = 0;
     PortalSide m_lastExitPortal = PortalSide::None;
     float m_nextTeleportTime = 0.0f;
     float m_nextStatusLogTime = 0.0f;

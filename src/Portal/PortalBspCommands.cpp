@@ -152,6 +152,21 @@ CON_COMMAND(portal_visual_entryhandoff, "Toggle official-style pre-Teleport entr
     PortalBspPhase1::LogStatus("console-entryhandoff-change");
 }
 
+CON_COMMAND(portal_visual_eyehistory, "Toggle official-style post-Teleport eye-history continuity: portal_visual_eyehistory <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_eyehistory current=%s usage='portal_visual_eyehistory <0|1>'.\n",
+            PortalTransitionDecision::GetPortalEyeContinuityEnabled() ? "true" : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetPortalEyeContinuityEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_eyehistory result=true eyeHistoryContinuity=%s.\n",
+        enabled ? "true" : "false");
+}
+
 CON_COMMAND(portal_bsp_restore, "Disable Phase 1 and restore every modified BSP brush")
 {
     const bool result = PortalBspPhase1::SetEnabled(false, "console-emergency-restore");

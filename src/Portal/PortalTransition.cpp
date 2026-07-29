@@ -200,6 +200,11 @@ void CPortalTransition::Reset()
     m_session = {};
     m_visualTransition = {};
     m_toneTransition = {};
+    m_eyeContinuity.Reset();
+    m_eyeContinuityTransactionId = 0;
+    m_eyeContinuityLogFramesRemaining = 0;
+    m_eyeContinuityLastCalcViewFrame = -1;
+    m_eyeContinuityCalcViewCallOrdinal = 0;
     m_lastExitPortal = PortalSide::None;
     m_nextTeleportTime = 0.0f;
     m_nextCrossingLogTime = 0.0f;
@@ -208,6 +213,206 @@ void CPortalTransition::Reset()
     m_nextEntryCameraLogTime = 0.0f;
     m_nextExitVisibilityLogTime = 0.0f;
     m_pendingEnvironmentRenderFrames = 0;
+}
+
+bool CPortalTransition::PublishPortalEyeTeleport(
+    const matrix3x4_t& entryToExit,
+    const Vector& exitPlaneOrigin,
+    const Vector& exitPlaneNormal,
+    std::uint32_t traversalEpoch,
+    int commandNumber,
+    std::uint32_t transactionId)
+{
+    const bool initializedBefore = m_eyeContinuity.IsInitialized();
+    const bool pendingBefore = m_eyeContinuity.HasPendingTeleport();
+    const bool published = m_eyeContinuity.PublishTeleport(
+        entryToExit,
+        exitPlaneOrigin,
+        exitPlaneNormal,
+        traversalEpoch,
+        commandNumber);
+    if (published)
+    {
+        m_eyeContinuityTransactionId = transactionId;
+        m_eyeContinuityLogFramesRemaining = 16;
+    }
+
+    U::LogInfo("[PortalEyeHistoryPending] txn=%u epoch=%u cmd=%d enabled=%s initializedBefore=%s pendingBefore=%s published=%s pendingAfter=%s exitPlaneOrigin=(%.3f %.3f %.3f) exitPlaneNormal=(%.4f %.4f %.4f).\n",
+        transactionId,
+        traversalEpoch,
+        commandNumber,
+        BoolText(PortalTransitionDecision::GetPortalEyeContinuityEnabled()),
+        BoolText(initializedBefore),
+        BoolText(pendingBefore),
+        BoolText(published),
+        BoolText(m_eyeContinuity.HasPendingTeleport()),
+        exitPlaneOrigin.x, exitPlaneOrigin.y, exitPlaneOrigin.z,
+        exitPlaneNormal.x, exitPlaneNormal.y, exitPlaneNormal.z);
+    return published;
+}
+
+bool CPortalTransition::ApplyPortalEyeContinuity(
+    C_BasePlayer* player,
+    Vector& eyeOrigin,
+    const Vector& eyeAngles)
+{
+    if (!player || !IsLocalPlayer(player))
+        return false;
+
+    const int frameCount =
+        I::GlobalVars ? I::GlobalVars->framecount : -1;
+    if (frameCount != m_eyeContinuityLastCalcViewFrame)
+    {
+        m_eyeContinuityLastCalcViewFrame = frameCount;
+        m_eyeContinuityCalcViewCallOrdinal = 0;
+    }
+    else
+    {
+        ++m_eyeContinuityCalcViewCallOrdinal;
+    }
+
+    const Vector originalViewEye = eyeOrigin;
+    const Vector rawPhysicalEye = player->EyePosition();
+    const Vector playerEyeAngles = player->EyeAngles();
+    const Vector playerOrigin = player->GetAbsOrigin();
+    const Vector playerVelocity = player->m_vecVelocity();
+    const int playerFlags = player->m_fFlags();
+    const int groundEntity = player->m_hGroundEntity().ToInt();
+    const unsigned int moveType = static_cast<unsigned int>(player->m_MoveType());
+    const bool onGround = (playerFlags & FL_ONGROUND) != 0;
+    const float frameTime = I::GlobalVars ? I::GlobalVars->frametime : 0.0f;
+    const PortalEyeContinuity::UpdateResult result = m_eyeContinuity.Update(
+        PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
+        rawPhysicalEye,
+        originalViewEye,
+        frameTime);
+
+    int candidateLeaf = -1;
+    int originalLeaf = -1;
+    bool runtimeSafetyFallback = false;
+    const char* runtimeSafetyReason = "none";
+    if (result.overrideOriginalView && I::EngineTrace)
+    {
+        candidateLeaf = I::EngineTrace->GetLeafContainingPoint(result.eyeOrigin);
+        originalLeaf = I::EngineTrace->GetLeafContainingPoint(originalViewEye);
+        if (result.outputExitDepth < -0.001f)
+        {
+            runtimeSafetyFallback = true;
+            runtimeSafetyReason = "negative-exit-depth";
+        }
+        else if (candidateLeaf <= 0)
+        {
+            runtimeSafetyFallback = true;
+            runtimeSafetyReason = "invalid-candidate-leaf";
+        }
+        else if (originalLeaf > 0 && candidateLeaf != originalLeaf)
+        {
+            runtimeSafetyFallback = true;
+            runtimeSafetyReason = "candidate-leaf-mismatch";
+        }
+    }
+
+    if (runtimeSafetyFallback)
+    {
+        // The original engine view is the verified A/B baseline. Abort this
+        // traversal's custom interpolation instead of allowing a visual-only
+        // residual to select a different BSP leaf.
+        m_eyeContinuity.Reset();
+        eyeOrigin = originalViewEye;
+    }
+    else if (result.overrideOriginalView)
+    {
+        eyeOrigin = result.eyeOrigin;
+    }
+
+    const bool shouldLog =
+        result.consumedPendingTeleport
+        || result.releasedOverride
+        || runtimeSafetyFallback
+        || (result.overrideOriginalView && m_eyeContinuityLogFramesRemaining > 0);
+    if (shouldLog)
+    {
+        const PortalTransitionContext& context =
+            G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
+        U::LogInfo("[PortalEyeHistory] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d phase=%s enabled=%s initialized=%s->%s pendingBefore=%s consumed=%s interpolating=%s->%s overrideState=%s->%s overrideOutput=%s released=%s planeConstrained=%s stateSafetyFallback=%s runtimeSafetyFallback=%s runtimeSafetyReason=%s leaf(candidate=%d original=%d) exitDepth(original=%.3f output=%.3f) normalCorrection=%.3f rawFreeMove=(%.3f %.3f %.3f) rawFreeMoveLength=%.3f engineViewMove=(%.3f %.3f %.3f) engineViewMoveLength=%.3f playerOrigin=(%.3f %.3f %.3f) moveType=%u flags=0x%X onGround=%s ground=%d velocity=(%.3f %.3f %.3f) speed=%.3f rawEye=(%.3f %.3f %.3f) originalEye=(%.3f %.3f %.3f) candidateEye=(%.3f %.3f %.3f) appliedEye=(%.3f %.3f %.3f) rawHistoryBefore=(%.3f %.3f %.3f) continuityBefore=(%.3f %.3f %.3f) rawHistoryTransformed=(%.3f %.3f %.3f) continuityTransformed=(%.3f %.3f %.3f) rawHistoryAfter=(%.3f %.3f %.3f) continuityAfter=(%.3f %.3f %.3f) playerAngles=(%.3f %.3f %.3f) calcViewAngles=(%.3f %.3f %.3f) rawResidual=%.3f originalResidual=%.3f frameTime=%.5f.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            frameCount,
+            m_eyeContinuityCalcViewCallOrdinal,
+            SimulatorPhaseName(context.phase),
+            BoolText(PortalTransitionDecision::GetPortalEyeContinuityEnabled()),
+            BoolText(result.initializedBefore),
+            BoolText(result.initializedAfter),
+            BoolText(result.hadPendingTeleport),
+            BoolText(result.consumedPendingTeleport),
+            BoolText(result.interpolatingBefore),
+            BoolText(result.interpolatingAfter),
+            BoolText(result.overridingBefore),
+            BoolText(result.overridingAfter),
+            BoolText(result.overrideOriginalView),
+            BoolText(result.releasedOverride),
+            BoolText(result.planeConstrained),
+            BoolText(result.safetyFallbackToOriginal),
+            BoolText(runtimeSafetyFallback),
+            runtimeSafetyReason,
+            candidateLeaf,
+            originalLeaf,
+            result.originalExitDepth,
+            result.outputExitDepth,
+            result.normalCorrection,
+            result.freeMovementDelta.x,
+            result.freeMovementDelta.y,
+            result.freeMovementDelta.z,
+            result.freeMovementDelta.Lenght(),
+            result.engineViewMovementDelta.x,
+            result.engineViewMovementDelta.y,
+            result.engineViewMovementDelta.z,
+            result.engineViewMovementDelta.Lenght(),
+            playerOrigin.x, playerOrigin.y, playerOrigin.z,
+            moveType,
+            playerFlags,
+            BoolText(onGround),
+            groundEntity,
+            playerVelocity.x, playerVelocity.y, playerVelocity.z,
+            playerVelocity.Lenght(),
+            rawPhysicalEye.x, rawPhysicalEye.y, rawPhysicalEye.z,
+            originalViewEye.x, originalViewEye.y, originalViewEye.z,
+            result.eyeOrigin.x, result.eyeOrigin.y, result.eyeOrigin.z,
+            eyeOrigin.x, eyeOrigin.y, eyeOrigin.z,
+            result.previousRawEyeBefore.x,
+            result.previousRawEyeBefore.y,
+            result.previousRawEyeBefore.z,
+            result.continuityEyeBefore.x,
+            result.continuityEyeBefore.y,
+            result.continuityEyeBefore.z,
+            result.previousRawEyeAfterTransform.x,
+            result.previousRawEyeAfterTransform.y,
+            result.previousRawEyeAfterTransform.z,
+            result.continuityEyeAfterTransform.x,
+            result.continuityEyeAfterTransform.y,
+            result.continuityEyeAfterTransform.z,
+            result.previousRawEyeAfter.x,
+            result.previousRawEyeAfter.y,
+            result.previousRawEyeAfter.z,
+            result.continuityEyeAfter.x,
+            result.continuityEyeAfter.y,
+            result.continuityEyeAfter.z,
+            playerEyeAngles.x, playerEyeAngles.y, playerEyeAngles.z,
+            eyeAngles.x, eyeAngles.y, eyeAngles.z,
+            result.rawResidual,
+            result.originalViewResidual,
+            frameTime);
+    }
+
+    if (result.overrideOriginalView && m_eyeContinuityLogFramesRemaining > 0)
+        --m_eyeContinuityLogFramesRemaining;
+    if (result.releasedOverride || runtimeSafetyFallback)
+    {
+        m_eyeContinuityTransactionId = 0;
+        m_eyeContinuityLogFramesRemaining = 0;
+    }
+    return result.overrideOriginalView && !runtimeSafetyFallback;
 }
 
 bool CPortalTransition::ApplyEntryCameraHandoff(
@@ -647,12 +852,17 @@ void CPortalTransition::LogRenderEnvironmentSnapshot(
             PortalVisualContinuity::SampleSemantics::ExitViewSpace;
         if (player)
         {
+            continuitySample.physicalEye =
+                ToContinuityVec3(player->EyePosition());
             continuitySample.playerOrigin =
                 ToContinuityVec3(player->GetAbsOrigin());
             continuitySample.velocity =
                 ToContinuityVec3(player->m_vecVelocity());
+            continuitySample.hasPhysicalEye = true;
             continuitySample.hasPlayerOrigin = true;
             continuitySample.hasVelocity = true;
+            continuitySample.physicalEyeSemantics =
+                PortalVisualContinuity::SampleSemantics::ExitPhysical;
             continuitySample.playerSemantics =
                 PortalVisualContinuity::SampleSemantics::ExitPhysical;
             continuitySample.velocitySemantics =

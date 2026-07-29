@@ -326,6 +326,14 @@ int main()
         !PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
             PortalTransitionPhase::Idle, 1521, 1521),
         "normal movement must not rewrite user command view angles");
+    PortalTransitionDecision::SetPortalEyeContinuityEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
+        "the eye-history continuity adapter must support an isolated A/B off path");
+    PortalTransitionDecision::SetPortalEyeContinuityEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
+        "the eye-history continuity adapter must support an isolated A/B on path");
     Expect(
         PortalTransitionDecision::IsWithinGModWallPortalBounds(16.5f, 0.0f, 0.0f),
         "GMod wall portal bounds accepts a centered player close to the portal plane");

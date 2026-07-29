@@ -1010,6 +1010,13 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
             m_context.teleportCommandNumber,
             continuityCommit,
             continuityDetails);
+    G::G_L4D2Portal.m_PortalTransition.PublishPortalEyeTeleport(
+        entryToExit,
+        probe.exit->origin,
+        probe.exit->normal,
+        m_context.traversalEpoch,
+        m_context.teleportCommandNumber,
+        continuityTransactionId);
 
     U::LogInfo("[PortalCrossingTransaction] txn=%u entry=%s exit=%s cmd=%d path=%s previousEntryDepth=%.3f currentEntryDepth=%.3f commitEntryDepth=%.3f transformedExitDepth=%.3f finalExitDepth=%.3f hasPrevious=%s swept=%s sweepFraction=%.3f.\n",
         continuityTransactionId,

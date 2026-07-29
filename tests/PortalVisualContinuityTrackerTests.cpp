@@ -116,8 +116,15 @@ int main()
         render.playerOrigin = { 14.0f + static_cast<float>(index), 0.0f, 0.0f };
         render.hasVelocity = true;
         render.velocity = { 245.0f, 0.0f, 0.0f };
+        render.hasPhysicalEye = true;
+        render.physicalEye = {
+            15.5f + static_cast<float>(index),
+            0.0f,
+            64.0f
+        };
         render.playerSemantics = SampleSemantics::ExitPhysical;
         render.velocitySemantics = SampleSemantics::ExitPhysical;
+        render.physicalEyeSemantics = SampleSemantics::ExitPhysical;
 
         const AppendResult result = tracker.RecordMainViewPreRender(render);
         finalRender = result;
@@ -141,6 +148,13 @@ int main()
 
     ExpectNear(finalRender.maximum.eyePosition, 3.0f,
         "the summary retains the largest eye-position discontinuity");
+    Expect(finalRender.maximum.hasViewToPhysicalEyeResidual,
+        "the summary must distinguish final-view residual from temporal motion");
+    ExpectNear(finalRender.maximum.viewToPhysicalEyeResidual, 1.5f,
+        "the summary measures each final view against its current physical eye");
+    Expect(
+        finalRender.maximum.viewToPhysicalEyeResidualStage == Stage::MainViewPreRender,
+        "the final-view residual preserves its source stage");
     Expect(
         finalRender.maximum.eyePositionFromStage == Stage::EntryHandoff
             && finalRender.maximum.eyePositionToStage == Stage::TeleportCommit,

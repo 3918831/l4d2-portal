@@ -59,6 +59,10 @@ int main()
         "exit visibility diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalContinuity] entry=Blue exit=Orange."),
         "teleport continuity diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalEyeHistoryPending] txn=1 published=true."),
+        "portal eye-history publication diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalEyeHistory] txn=1 consumed=true."),
+        "portal eye-history update diagnostics must be file-only");
 
     Expect(ShouldCapture("[PortalHookProbe] domain=client."),
         "file-only traversal probes must still be captured");
@@ -80,6 +84,10 @@ int main()
         "exit visibility diagnostics must be captured");
     Expect(ShouldCapture("[PortalContinuity] entry=Blue exit=Orange."),
         "teleport continuity diagnostics must be captured");
+    Expect(ShouldCapture("[PortalEyeHistoryPending] txn=1 published=true."),
+        "portal eye-history publication diagnostics must be captured");
+    Expect(ShouldCapture("[PortalEyeHistory] txn=1 consumed=true."),
+        "portal eye-history update diagnostics must be captured");
     Expect(!ShouldCapture("ordinary initialization message"),
         "unrelated console messages must not be added to the focused file log");
 

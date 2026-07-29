@@ -10,6 +10,7 @@ namespace
     bool g_portalNearClipFixEnabled = true;
     bool g_exactExitVisualGuardEnabled = true;
     bool g_entryCameraHandoffEnabled = true;
+    bool g_portalEyeContinuityEnabled = true;
 }
 
 bool PortalTransitionDecision::RequiresControlledNoclip(PortalTransitionPhase phase)
@@ -229,6 +230,16 @@ bool PortalTransitionDecision::GetEntryCameraHandoffEnabled()
 void PortalTransitionDecision::SetEntryCameraHandoffEnabled(bool enabled)
 {
     g_entryCameraHandoffEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetPortalEyeContinuityEnabled()
+{
+    return g_portalEyeContinuityEnabled;
+}
+
+void PortalTransitionDecision::SetPortalEyeContinuityEnabled(bool enabled)
+{
+    g_portalEyeContinuityEnabled = enabled;
 }
 
 bool PortalTransitionDecision::ShouldApplyEntryCameraHandoff(

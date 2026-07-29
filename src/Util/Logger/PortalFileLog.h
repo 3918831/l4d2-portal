@@ -43,6 +43,7 @@ namespace U::PortalFileLog
         "PortalVisualTxn",
         "PortalTeleportCommit",
         "PortalContinuity",
+        "PortalEyeHistory",
         "PortalExitRearm",
         "PortalExitState",
         "PortalRestoreWalk",

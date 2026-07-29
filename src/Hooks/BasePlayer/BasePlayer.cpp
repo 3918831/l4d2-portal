@@ -23,6 +23,14 @@ void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* ed
 		Func.Original<FN>()(pThis, edx, eyeOrigin, eyeAngles, fov);
 	}
 
+	// Consume the transaction matrix before the geometric entry handoff. This
+	// keeps the stored eye history in physical entry space until Teleport commits,
+	// matching Portal's DetectAndHandlePortalTeleportation/CalcView ordering.
+	G::G_L4D2Portal.m_PortalTransition.ApplyPortalEyeContinuity(
+		pThis,
+		eyeOrigin,
+		eyeAngles);
+
 	// Match Portal's client-side CalcPortalView handoff: once the local eye has
 	// crossed the entry plane, render from its linked-space transform while the
 	// physical movement command is still waiting to commit Teleport.

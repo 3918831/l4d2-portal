@@ -83,20 +83,37 @@ namespace
 
         const int viewLeaf = I::EngineTrace ? I::EngineTrace->GetLeafContainingPoint(view.origin) : -1;
         const int exitLeaf = (I::EngineTrace && exitPortal) ? I::EngineTrace->GetLeafContainingPoint(exitPortal->origin) : -1;
+        const int viewWorldContents = I::EngineTrace
+            ? I::EngineTrace->GetPointContents_WorldOnly(view.origin, MASK_ALL)
+            : -1;
+        const int viewPlayerSolidContents = I::EngineTrace
+            ? I::EngineTrace->GetPointContents(view.origin, MASK_PLAYERSOLID)
+            : -1;
+        const bool viewOutsideWorld = I::EngineTrace
+            ? I::EngineTrace->PointOutsideWorld(view.origin)
+            : true;
+        const std::uint32_t transactionId =
+            G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.GetLastTransactionId();
+        const int frameCount = I::GlobalVars ? I::GlobalVars->framecount : -1;
 
         U::LogWarning(
-            "[PortalRenderState] phase=%s depth=%d bloomTone=%d viewLeaf=%d exitLeaf=%d "
+            "[PortalRenderState] txn=%u frame=%d phase=%s depth=%d bloomTone=%d viewLeaf=%d exitLeaf=%d viewWorldContents=0x%X viewPlayerSolidContents=0x%X viewOutsideWorld=%s "
             "viewOrigin=(%.1f %.1f %.1f) viewAngles=(%.1f %.1f %.1f) "
             "entry=(%.1f %.1f %.1f) exit=(%.1f %.1f %.1f) "
             "target=%s targetSize=%dx%d currentRT=%p viewport=%d,%d,%d,%d "
             "tone=(%.3f %.3f %.3f) fogMode=%d fogDist=(%.1f %.1f %.1f) fogColor=(%u %u %u) "
             "visCount=%d forcedLeaf=%d firstVis=(%.1f %.1f %.1f) "
             "fogInfo=(vol=%d leaf=%d eye=%d dist=%.1f water=%.1f mat=%p)\n",
+            transactionId,
+            frameCount,
             phase ? phase : "<null>",
             depth,
             view.m_bDoBloomAndToneMapping ? 1 : 0,
             viewLeaf,
             exitLeaf,
+            viewWorldContents,
+            viewPlayerSolidContents,
+            viewOutsideWorld ? "true" : "false",
             view.origin.x, view.origin.y, view.origin.z,
             view.angles.x, view.angles.y, view.angles.z,
             entryPortal ? entryPortal->origin.x : 0.0f,
@@ -622,6 +639,7 @@ void L4D2_Portal::PortalShutdown()
     m_pCustomMaterialSystem = nullptr;
 
     U::LogInfo("Shutdown completed\n");
+    U::PortalFileLog::Flush();
 }
 
 /*

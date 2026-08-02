@@ -6,6 +6,70 @@
 
 namespace PortalEyeContinuity
 {
+    struct ShadowPredictionResult
+    {
+        Vector eyeOrigin;
+        Vector baselineEye;
+        Vector baselineDelta;
+        Vector rawEyeDelta;
+        Vector shadowEyeBefore;
+        Vector shadowEyeAfter;
+        Vector shadowFrameDelta;
+        Vector predictionOffset;
+        bool enabled = false;
+        bool active = false;
+        bool initializedBefore = false;
+        bool initializedAfter = false;
+        bool restarted = false;
+        bool rawAdvanced = false;
+        bool worldSpaceAdvanced = false;
+        bool horizonClamped = false;
+        bool applied = false;
+        float predictionElapsedBefore = 0.0f;
+        float predictionElapsed = 0.0f;
+        float predictionHorizon = 0.0f;
+    };
+
+    class ShadowPredictor
+    {
+    public:
+        void Reset();
+        ShadowPredictionResult Update(
+            bool enabled,
+            bool continuityActive,
+            bool restart,
+            const Vector& baselineEye,
+            const Vector& rawPhysicalEye,
+            const Vector& velocity,
+            float frameTime,
+            float predictionHorizon,
+            bool advanceFrameClock);
+
+    private:
+        Vector m_rawEyeAnchor;
+        Vector m_previousBaselineEye;
+        Vector m_shadowEye;
+        float m_predictionElapsed = 0.0f;
+        bool m_initialized = false;
+    };
+
+    class ShadowDiagnosticLogGate
+    {
+    public:
+        void Reset();
+        bool ShouldLog(
+            const ShadowPredictionResult& result,
+            bool consumedPendingTeleport,
+            bool releasedOverride,
+            bool runtimeSafetyFallback);
+
+    private:
+        bool m_hasPrevious = false;
+        bool m_previousInitialized = false;
+        bool m_previousApplied = false;
+        bool m_previousHorizonClamped = false;
+    };
+
     struct UpdateResult
     {
         Vector eyeOrigin;
@@ -15,8 +79,10 @@ namespace PortalEyeContinuity
         Vector continuityEyeAfterTransform;
         Vector freeMovementDelta;
         Vector engineViewMovementDelta;
+        Vector unconstrainedEye;
         Vector previousRawEyeAfter;
         Vector continuityEyeAfter;
+        Vector activeExitPlaneNormal;
         bool overrideOriginalView = false;
         bool consumedPendingTeleport = false;
         bool releasedOverride = false;
@@ -30,6 +96,8 @@ namespace PortalEyeContinuity
         bool planeConstrained = false;
         bool safetyFallbackToOriginal = false;
         float normalCorrection = 0.0f;
+        float unconstrainedExitDepth = 0.0f;
+        float unconstrainedOriginalResidual = 0.0f;
         float originalExitDepth = 0.0f;
         float outputExitDepth = 0.0f;
         float rawResidual = 0.0f;
@@ -53,7 +121,6 @@ namespace PortalEyeContinuity
             const Vector& rawPhysicalEye,
             const Vector& originalViewEye,
             float frameTime);
-
         bool HasPendingTeleport() const { return m_hasPendingTeleport; }
         bool IsInitialized() const { return m_initialized; }
         bool IsInterpolating() const { return m_eyePositionIsInterpolating; }

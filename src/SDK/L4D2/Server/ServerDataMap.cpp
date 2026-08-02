@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "../Includes/iserverunknown.h"
+#include "../../../Util/Math/Vector/Vector.h"
 
 namespace
 {
@@ -200,6 +201,12 @@ namespace
             *outValue = *static_cast<const int*>(fieldAddress);
             return true;
 
+        case FIELD_EHANDLE:
+            if (!IsReadableRange(fieldAddress, sizeof(int)))
+                return false;
+            *outValue = *static_cast<const int*>(fieldAddress);
+            return true;
+
         default:
             return false;
         }
@@ -279,6 +286,27 @@ namespace L4D2::ServerDataMap
 
         const unsigned char* fieldAddress = reinterpret_cast<const unsigned char*>(entity) + info.actualOffset;
         return ReadFieldValueAsInt(fieldAddress, info.typedesc, outValue);
+    }
+
+    bool TryReadFieldVector(CBaseEntity* entity, const FieldInfo& info, Vector* outValue)
+    {
+        if (!entity || !info.typedesc || !outValue)
+            return false;
+
+        if (info.fieldType != FIELD_VECTOR
+            && info.fieldType != FIELD_POSITION_VECTOR)
+        {
+            return false;
+        }
+
+        const unsigned char* fieldAddress =
+            reinterpret_cast<const unsigned char*>(entity)
+            + info.actualOffset;
+        if (!IsReadableRange(fieldAddress, sizeof(Vector)))
+            return false;
+
+        *outValue = *reinterpret_cast<const Vector*>(fieldAddress);
+        return true;
     }
 
     bool TryWriteFieldInt(CBaseEntity* entity, const FieldInfo& info, int value)

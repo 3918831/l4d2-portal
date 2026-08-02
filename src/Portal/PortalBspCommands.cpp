@@ -2,6 +2,7 @@
 #include "PortalNearViewRenderPolicy.h"
 #include "PortalRenderFixRenderer.h"
 #include "PortalTransitionDecision.h"
+#include "L4D2_Portal.h"
 
 #include "../SDK/L4D2/Includes/convar.h"
 #include "../Util/Logger/Logger.h"
@@ -29,6 +30,20 @@ CON_COMMAND(portal_bsp_phase1, "Enable unrestricted Phase 1 BSP carving: portal_
 CON_COMMAND(portal_bsp_status, "Print Phase 1 BSP carving status")
 {
     PortalBspPhase1::LogStatus("console-status");
+    U::PortalFileLog::WriteAlwaysFormat(
+        "[PortalFileLog] flush reason=portal_bsp_status build=%s modulePath=%s.\n",
+        U::PortalFileLog::GetBuildId(),
+        U::PortalFileLog::GetLoadedModulePath());
+    U::PortalFileLog::Flush();
+}
+
+CON_COMMAND(portal_log_flush, "Flush buffered portal diagnostics and print the loaded build identity")
+{
+    U::LogInfo(
+        "[PortalFileLog] flush reason=console-command build=%s modulePath=%s.\n",
+        U::PortalFileLog::GetBuildId(),
+        U::PortalFileLog::GetLoadedModulePath());
+    U::PortalFileLog::Flush();
 }
 
 CON_COMMAND(portal_bsp_clearance, "Select exit clearance: portal_bsp_clearance <full|plane|exact>")
@@ -165,6 +180,87 @@ CON_COMMAND(portal_visual_eyehistory, "Toggle official-style post-Teleport eye-h
     PortalTransitionDecision::SetPortalEyeContinuityEnabled(enabled);
     U::LogInfo("[PortalBsp][Command] command=portal_visual_eyehistory result=true eyeHistoryContinuity=%s.\n",
         enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-eyehistory-change");
+}
+
+CON_COMMAND(portal_visual_shadowpredictor, "Toggle render-time eye extrapolation experiment: portal_visual_shadowpredictor <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_shadowpredictor current=%s usage='portal_visual_shadowpredictor <0|1>'.\n",
+            PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled() ? "true" : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_shadowpredictor result=true shadowPredictor=%s scope=render-eye-only horizon=one-runtime-tick physicsMutation=false.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-shadowpredictor-change");
+}
+
+CON_COMMAND(portal_server_command_anglefix, "Toggle official-style one-shot server command angle transform: portal_server_command_anglefix <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_server_command_anglefix current=%s usage='portal_server_command_anglefix <0|1>'.\n",
+            PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled() ? "true" : "false");
+        PortalBspPhase1::LogStatus("console-server-command-anglefix-query");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetServerPortalCommandAngleFixEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_server_command_anglefix result=true serverCommandAngleFix=%s.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-server-command-anglefix-change");
+}
+
+CON_COMMAND(portal_visual_transactiondiag, "Toggle commit-through-plus-3 portal prediction diagnostics: portal_visual_transactiondiag <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_transactiondiag current=%s usage='portal_visual_transactiondiag <0|1>'.\n",
+            PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled() ? "true" : "false");
+        PortalBspPhase1::LogStatus("console-transactiondiag-query");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetPortalTransactionDiagnosticsEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_transactiondiag result=true transactionDiagnostics=%s predictionWindow=commit-plus-3 behaviorMutation=false.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-transactiondiag-change");
+}
+
+CON_COMMAND(portal_prediction_commit_sync, "Toggle one-shot committed origin/velocity synchronization at client SetupMove: portal_prediction_commit_sync <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_prediction_commit_sync current=%s usage='portal_prediction_commit_sync <0|1>'.\n",
+            PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled() ? "true" : "false");
+        PortalBspPhase1::LogStatus("console-prediction-commit-sync-query");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_prediction_commit_sync result=true predictionCommitSync=%s scope=exact-commit-command setupBoundary=post-original behaviorMutation=%s.\n",
+        enabled ? "true" : "false",
+        enabled ? "one-shot" : "false");
+    PortalBspPhase1::LogStatus("console-prediction-commit-sync-change");
+}
+
+CON_COMMAND(portal_visual_mark, "Mark a suspected visual flash and dump the most recent portal transaction: portal_visual_mark [reason]")
+{
+    const char* reason =
+        args.ArgC() >= 2 ? args.Arg(1) : "manual-visual-marker";
+    const std::uint32_t transactionId =
+        G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.MarkUserEvent(reason);
+    U::LogInfo(
+        "[PortalBsp][Command] command=portal_visual_mark result=true reason=%s txn=%u.\n",
+        reason,
+        transactionId);
 }
 
 CON_COMMAND(portal_bsp_restore, "Disable Phase 1 and restore every modified BSP brush")

@@ -166,6 +166,7 @@
     <ClCompile Include="Hooks\BasePlayer\BasePlayer.cpp" />
     <ClCompile Include="Hooks\ClientMode\ClientMode.cpp" />
     <ClCompile Include="Hooks\ClientPrediction\ClientPrediction.cpp" />
+    <ClCompile Include="Hooks\ServerPlayer\ServerPlayerRunCommand.cpp" />
     <ClCompile Include="Hooks\CL_Main\CL_Main.cpp" />
     <ClCompile Include="Hooks\C_Weapon\Weapon_Pistol.cpp" />
     <ClCompile Include="Hooks\EngineServer\EngineServer.cpp" />
@@ -192,6 +193,7 @@
     <ClCompile Include="Portal\PortalPlayerTeleport.cpp" />
     <ClCompile Include="Portal\PortalControlledNoclipMovement.cpp" />
     <ClCompile Include="Portal\PortalEyeContinuity.cpp" />
+    <ClCompile Include="Portal\PortalRenderCadenceTracker.cpp" />
     <ClCompile Include="Portal\PortalTransition.cpp" />
     <ClCompile Include="Portal\PortalTransitionDecision.cpp" />
     <ClCompile Include="Portal\PortalTransitionSimulator.cpp" />
@@ -217,6 +219,7 @@
     <ClCompile Include="Util\Hook\MinHook\hook.c" />
     <ClCompile Include="Util\Hook\MinHook\trampoline.c" />
     <ClCompile Include="Util\Interface\Interface.cpp" />
+    <ClCompile Include="Util\Logger\PortalFileLog.cpp" />
     <ClCompile Include="Util\Math\Math.cpp" />
     <ClCompile Include="Util\NetVarManager\NetVarManager.cpp" />
     <ClCompile Include="Util\Offsets\Offsets.cpp" />
@@ -238,6 +241,7 @@
     <ClInclude Include="Hooks\BasePlayer\BasePlayer.h" />
     <ClInclude Include="Hooks\ClientMode\ClientMode.h" />
     <ClInclude Include="Hooks\ClientPrediction\ClientPrediction.h" />
+    <ClInclude Include="Hooks\ServerPlayer\ServerPlayerRunCommand.h" />
     <ClInclude Include="Hooks\CL_Main\CL_Main.h" />
     <ClInclude Include="Hooks\C_Weapon\Weapon_Pistol.h" />
     <ClInclude Include="Hooks\EngineServer\EngineServer.h" />
@@ -269,6 +273,7 @@
     <ClInclude Include="Portal\PortalPlayerTeleport.h" />
     <ClInclude Include="Portal\PortalControlledNoclipMovement.h" />
     <ClInclude Include="Portal\PortalEyeContinuity.h" />
+    <ClInclude Include="Portal\PortalRenderCadenceTracker.h" />
     <ClInclude Include="Portal\PortalTransition.h" />
     <ClInclude Include="Portal\PortalTransitionDecision.h" />
     <ClInclude Include="Portal\PortalTransitionSimulator.h" />

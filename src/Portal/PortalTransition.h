@@ -2,6 +2,7 @@
 
 #include "../SDK/SDK.h"
 #include "PortalEyeContinuity.h"
+#include "PortalRenderCadenceTracker.h"
 #include "PortalTransform.h"
 
 class C_TerrorPlayer;
@@ -32,6 +33,11 @@ public:
         C_BasePlayer* player,
         Vector& eyeOrigin,
         const Vector& eyeAngles);
+    void CapturePortalRenderCadenceCalcView(
+        C_BasePlayer* player,
+        const Vector& calcViewInputEye,
+        const Vector& originalViewEye,
+        const Vector& adaptedViewEye);
     void ApplyVisualTransition(CViewSetup& view);
     void ApplyPortalNearClipFix(CViewSetup& view);
     bool TryGetExactExitVisibilityOrigin(
@@ -145,6 +151,18 @@ private:
         const char* reason = nullptr;
     };
 
+    struct RenderCadenceCalcViewObservation
+    {
+        bool valid = false;
+        int frameCount = -1;
+        Vector inputEye;
+        Vector originalEye;
+        Vector adaptedEye;
+        bool eyeHistoryActive = false;
+        bool eyeHistoryReleased = false;
+        bool shadowPredictorApplied = false;
+    };
+
     PortalRuntimeState m_blueState;
     PortalRuntimeState m_orangeState;
     TraversalSession m_session;
@@ -152,8 +170,11 @@ private:
     VisualTransitionState m_visualTransition;
     ToneTransitionState m_toneTransition;
     PortalEyeContinuity::State m_eyeContinuity;
+    PortalEyeContinuity::ShadowPredictor m_eyeShadowPredictor;
+    PortalEyeContinuity::ShadowDiagnosticLogGate m_eyeShadowDiagnosticLogGate;
+    PortalRenderCadence::Tracker m_renderCadence;
+    RenderCadenceCalcViewObservation m_renderCadenceCalcView;
     std::uint32_t m_eyeContinuityTransactionId = 0;
-    int m_eyeContinuityLogFramesRemaining = 0;
     int m_eyeContinuityLastCalcViewFrame = -1;
     int m_eyeContinuityCalcViewCallOrdinal = 0;
     PortalSide m_lastExitPortal = PortalSide::None;
@@ -166,9 +187,14 @@ private:
     float m_nextNearClipLogTime = 0.0f;
     float m_nextEntryCameraLogTime = 0.0f;
     float m_nextExitVisibilityLogTime = 0.0f;
+    float m_nextEyeResidualBaselineLogTime = 0.0f;
     int m_environmentTraceSequence = 0;
     int m_pendingEnvironmentRenderFrames = 0;
     bool m_serverMoveTypeWriteDryRunDone = false;
+
+    void RecordPortalRenderCadence(
+        C_BasePlayer* player,
+        const Vector& finalViewEye);
 
     C_TerrorPlayer* GetLocalPlayer() const;
     bool ArePortalsReady() const;

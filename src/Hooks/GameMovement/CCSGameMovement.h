@@ -124,6 +124,18 @@ namespace Hooks
 			void __fastcall Detour(void* ecx, void* edx);
 		}
 
+		namespace ClientProcessMovement
+		{
+			using FN = void(__fastcall*)(void*, void*, C_BasePlayer*, CMoveData*);
+			constexpr uint32_t Index = 1u;
+
+			void __fastcall Detour(
+				void* ecx,
+				void* edx,
+				C_BasePlayer* player,
+				CMoveData* move);
+		}
+
 		namespace ClientWalkMove
 		{
 			using FN = WalkMove::FN;

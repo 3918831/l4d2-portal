@@ -17,6 +17,30 @@ enum class PortalExitClearanceMode
     ExactTransform,
 };
 
+enum class PortalServerCommandTiming
+{
+    NoCommit,
+    BeforeCommit,
+    CommitCommand,
+    AfterCommitWindow,
+    AfterWindow,
+};
+
+enum class PortalCommandAngleSpace
+{
+    Unknown,
+    Entry,
+    Exit,
+    Ambiguous,
+};
+
+struct PortalServerRunCommandClassification
+{
+    PortalServerCommandTiming timing = PortalServerCommandTiming::NoCommit;
+    PortalCommandAngleSpace angleSpace = PortalCommandAngleSpace::Unknown;
+    int commandDelta = 0;
+};
+
 namespace PortalTransitionDecision
 {
     bool RequiresControlledNoclip(PortalTransitionPhase phase);
@@ -28,14 +52,32 @@ namespace PortalTransitionDecision
     bool ShouldAllowTraversalEntry(PortalTransitionPhase phase, float currentTime, float cooldownUntil);
     float ComputeExitRearmCooldownUntil(float releaseTime, float cooldownDuration);
     bool IsCommittedTeleportPredictionSyncPhase(PortalTransitionPhase phase);
-    bool ShouldSyncCommittedMoveAtPredictionFinish(
-        PortalTransitionPhase phase,
-        int commandNumber,
-        int committedCommandNumber);
     bool ShouldSyncCommittedViewAnglesAtPredictionSetup(
         PortalTransitionPhase phase,
         int commandNumber,
         int committedCommandNumber);
+    bool ShouldSyncCommittedMovementAtPredictionSetup(
+        bool enabled,
+        PortalTransitionPhase phase,
+        int commandNumber,
+        int committedCommandNumber);
+    bool GetPredictionCommitMovementSyncEnabled();
+    void SetPredictionCommitMovementSyncEnabled(bool enabled);
+    PortalServerRunCommandClassification ClassifyServerRunCommand(
+        bool hasCommittedTeleport,
+        int commandNumber,
+        int committedCommandNumber,
+        float differenceFromPrePortalAngles,
+        float differenceFromPostPortalAngles);
+    bool ShouldApplyServerPortalCommandAngleFix(
+        bool enabled,
+        PortalServerCommandTiming timing,
+        PortalCommandAngleSpace angleSpace);
+    bool GetServerPortalCommandAngleFixEnabled();
+    void SetServerPortalCommandAngleFixEnabled(bool enabled);
+    bool GetPortalTransactionDiagnosticsEnabled();
+    void SetPortalTransactionDiagnosticsEnabled(bool enabled);
+    bool IsPortalPredictionDiagnosticCommandDelta(int commandDelta);
     bool IsWithinGModWallPortalBounds(float frontDistance, float feetLocalRight, float feetLocalUp);
     bool IsViewNearPortalPlane(
         float forwardDistance,
@@ -78,6 +120,8 @@ namespace PortalTransitionDecision
     void SetEntryCameraHandoffEnabled(bool enabled);
     bool GetPortalEyeContinuityEnabled();
     void SetPortalEyeContinuityEnabled(bool enabled);
+    bool GetPortalEyeShadowPredictorEnabled();
+    void SetPortalEyeShadowPredictorEnabled(bool enabled);
     bool ShouldApplyEntryCameraHandoff(
         bool enabled,
         PortalTransitionPhase phase,

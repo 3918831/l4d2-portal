@@ -10,6 +10,10 @@ using namespace Hooks;
 
 void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* edx, Vector& eyeOrigin, Vector& eyeAngles, float& fov)
 {
+	// Preserve the actual CalcPlayerView input for the render-source cadence
+	// diagnostic before the native view calculation mutates it.
+	const Vector calcViewInputEye = eyeOrigin;
+
 	if (pThis && !pThis->deadflag()) //Thanks Spook for telling me to do it here.
 	{
 		const Vector vOldPunch = pThis->GetPunchAngle();
@@ -22,6 +26,7 @@ void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* ed
 	{
 		Func.Original<FN>()(pThis, edx, eyeOrigin, eyeAngles, fov);
 	}
+	const Vector originalViewEye = eyeOrigin;
 
 	// Consume the transaction matrix before the geometric entry handoff. This
 	// keeps the stored eye history in physical entry space until Teleport commits,
@@ -39,6 +44,15 @@ void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* ed
 		eyeOrigin,
 		eyeAngles,
 		fov);
+
+	// Preserve the CalcPlayerView seam separately. The final CViewSetup origin is
+	// sampled later at the main-view submission point, after all view adapters.
+	G::G_L4D2Portal.m_PortalTransition.CapturePortalRenderCadenceCalcView(
+		pThis,
+		calcViewInputEye,
+		originalViewEye,
+		eyeOrigin);
+
 }
 
 void BasePlayer::Init()

@@ -175,6 +175,18 @@ namespace PortalVisualContinuity
         {
             return m_active ? m_activeTransactionId : 0;
         }
+        std::uint32_t GetLastTransactionId() const
+        {
+            return m_activeTransactionId;
+        }
+        int GetSampleCount() const { return m_sampleCount; }
+        const Sample* GetSample(int index) const
+        {
+            return index >= 0 && index < m_sampleCount
+                ? &m_samples[index]
+                : nullptr;
+        }
+        const MaximumDelta& GetMaximum() const { return m_maximum; }
 
     private:
         AppendResult Append(const Sample& sample);

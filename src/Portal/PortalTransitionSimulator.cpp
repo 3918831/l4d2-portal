@@ -80,6 +80,7 @@ namespace
     {
         return { value.x, value.y, value.z };
     }
+
 }
 
 void CPortalTransitionSimulator::Reset()
@@ -95,6 +96,11 @@ void CPortalTransitionSimulator::Reset()
     m_lastCommittedMovementVelocity = Vector();
     m_lastCommittedMovementAngles = QAngle();
     m_hasLastCommittedMovement = false;
+    m_lastPrePortalViewAngles = QAngle();
+    m_lastCommittedEntryToExit = {};
+    m_hasLastCommittedEntryToExit = false;
+    m_serverPortalCommandAngleFixPending = false;
+    m_lastCommittedTransactionId = 0;
     m_previousAnchor = {};
     m_previousBlueOrigin = Vector();
     m_previousBlueNormal = Vector();
@@ -449,6 +455,109 @@ bool CPortalTransitionSimulator::TryGetCommittedMovementForCommand(
         *committedVelocity = m_lastCommittedMovementVelocity;
     if (committedAngles)
         *committedAngles = m_lastCommittedMovementAngles;
+    return true;
+}
+
+bool CPortalTransitionSimulator::TryGetCommittedMovementForDiagnostic(
+    int commandNumber,
+    Vector* committedOrigin,
+    Vector* committedVelocity,
+    QAngle* committedAngles,
+    int* commandDelta,
+    std::uint32_t* transactionId) const
+{
+    if (!m_hasLastCommittedMovement
+        || m_lastCommittedTransactionId == 0
+        || commandNumber <= 0)
+    {
+        return false;
+    }
+
+    const int delta = commandNumber - m_lastCommittedMovementCommandNumber;
+    if (!PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(delta))
+        return false;
+
+    if (committedOrigin)
+        *committedOrigin = m_lastCommittedMovementOrigin;
+    if (committedVelocity)
+        *committedVelocity = m_lastCommittedMovementVelocity;
+    if (committedAngles)
+        *committedAngles = m_lastCommittedMovementAngles;
+    if (commandDelta)
+        *commandDelta = delta;
+    if (transactionId)
+        *transactionId = m_lastCommittedTransactionId;
+    return true;
+}
+
+bool CPortalTransitionSimulator::ObserveServerRunCommand(
+    const CUserCmd* cmd,
+    PortalServerRunCommandObservation* result) const
+{
+    if (!result)
+        return false;
+
+    PortalServerRunCommandObservation local;
+    local.hasCommittedTeleport =
+        m_hasLastCommittedMovement
+        && m_lastCommittedTransactionId != 0;
+    local.transactionId = m_lastCommittedTransactionId;
+    local.committedCommandNumber = m_lastCommittedMovementCommandNumber;
+    local.prePortalAngles = m_lastPrePortalViewAngles;
+    local.postPortalAngles = m_lastCommittedMovementAngles;
+    local.entryToExit = m_lastCommittedEntryToExit;
+    local.hasEntryToExitMatrix = m_hasLastCommittedEntryToExit;
+    local.commandAngleFixPending = m_serverPortalCommandAngleFixPending;
+
+    if (!cmd)
+    {
+        *result = local;
+        return false;
+    }
+
+    local.commandNumber = cmd->command_number;
+    local.commandDelta =
+        local.commandNumber - local.committedCommandNumber;
+    local.inputAngles.x = cmd->viewangles.x;
+    local.inputAngles.y = cmd->viewangles.y;
+    local.inputAngles.z = cmd->viewangles.z;
+    const auto angleDifference = [](const QAngle& first, const QAngle& second)
+    {
+        return std::fabs(U::Math.NormalizeAngle(first.x - second.x))
+            + std::fabs(U::Math.NormalizeAngle(first.y - second.y))
+            + std::fabs(U::Math.NormalizeAngle(first.z - second.z));
+    };
+    local.differenceFromPrePortalAngles =
+        angleDifference(local.inputAngles, local.prePortalAngles);
+    local.differenceFromPostPortalAngles =
+        angleDifference(local.inputAngles, local.postPortalAngles);
+    const PortalServerRunCommandClassification classification =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            local.hasCommittedTeleport,
+            local.commandNumber,
+            local.committedCommandNumber,
+            local.differenceFromPrePortalAngles,
+            local.differenceFromPostPortalAngles);
+    local.commandDelta = classification.commandDelta;
+    local.timing = classification.timing;
+    local.angleSpace = classification.angleSpace;
+
+    *result = local;
+    return true;
+}
+
+bool CPortalTransitionSimulator::ConsumeServerPortalCommandAngleFix(
+    int commandNumber)
+{
+    if (!m_serverPortalCommandAngleFixPending
+        || commandNumber <= 0
+        || m_lastCommittedMovementCommandNumber <= 0
+        || commandNumber < m_lastCommittedMovementCommandNumber)
+    {
+        return false;
+    }
+
+    m_serverPortalCommandAngleFixPending = false;
     return true;
 }
 
@@ -832,6 +941,7 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
     }
 
     const PortalPlayerAnchor anchor = overrideAnchor ? *overrideAnchor : BuildPlayerAnchor(player);
+    const bool wasOnGround = (player->m_fFlags() & FL_ONGROUND) != 0;
     const Vector originFromCenter = anchor.origin - anchor.center;
     const Vector transformedCenter = PortalTransform::TransformPoint(entryToExit, anchor.center);
     const Vector mins = player->GetPlayerMins();
@@ -915,7 +1025,16 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
         Vector(newAngles.x, newAngles.y, newAngles.z),
         &exitReferenceOrigin);
 
-    if (!PortalPlayerTeleport::Commit(player, newOrigin, newAngles, newVelocity))
+    const int teleportCommandNumber =
+        cmd ? cmd->command_number : commandNumberOverride;
+    if (!PortalPlayerTeleport::Commit(
+        player,
+        newOrigin,
+        newAngles,
+        newVelocity,
+        entryToExit,
+        m_context.traversalEpoch,
+        teleportCommandNumber))
     {
         U::LogWarning("[PortalTeleportCommit] failed reason=server-teleport-rejected entry=%s exit=%s depth=%.2f oldOrigin=(%.1f %.1f %.1f) newOrigin=(%.1f %.1f %.1f) oldAngles=(%.1f %.1f %.1f) newAngles=(%.1f %.1f %.1f).\n",
             SideName(probe.side),
@@ -1010,6 +1129,103 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
             m_context.teleportCommandNumber,
             continuityCommit,
             continuityDetails);
+
+    // Portal's player movement path transforms the command's frame-end center
+    // after detecting the plane crossing inside HandlePortalling.  Our current
+    // path commits from CreateMove, then the matching prediction command runs
+    // normal movement from the committed exit position.  Record the linear,
+    // collision-free command geometry needed to measure that scheduling gap.
+    float commandInterval = 1.0f / 30.0f;
+    if (I::GlobalVars && I::GlobalVars->interval_per_tick > 0.0f)
+        commandInterval = I::GlobalVars->interval_per_tick;
+
+    const bool projectedPath = overrideAnchor != nullptr;
+    float projectedLeadTime = 0.0f;
+    if (projectedPath && probe.velDot < -0.001f)
+    {
+        projectedLeadTime =
+            (probe.observedCenterDistance - probe.centerDistance) / -probe.velDot;
+        projectedLeadTime = std::max(0.0f, std::min(commandInterval, projectedLeadTime));
+    }
+
+    const Vector observedCenter = projectedPath
+        ? anchor.center - anchor.velocity * projectedLeadTime
+        : anchor.center - anchor.velocity * commandInterval;
+    const float observedDepth = projectedPath
+        ? SignedDistanceToPortal(*probe.entry, observedCenter)
+        : probe.previousCenterDistance;
+    const Vector linearFrameEndCenter = projectedPath
+        ? observedCenter + anchor.velocity * commandInterval
+        : anchor.center;
+    const float linearFrameEndDepth = projectedPath
+        ? SignedDistanceToPortal(*probe.entry, linearFrameEndCenter)
+        : probe.observedCenterDistance;
+    const bool crossesInsideCommand =
+        observedDepth > 0.0f
+        && linearFrameEndDepth <= 0.0f
+        && probe.velDot < -0.001f;
+    const float planeCrossingTime = crossesInsideCommand
+        ? std::max(0.0f, std::min(commandInterval, observedDepth / -probe.velDot))
+        : -1.0f;
+    const float postPortalCommandTime = crossesInsideCommand
+        ? commandInterval - planeCrossingTime
+        : -1.0f;
+
+    const Vector officialCrossingCommandEndOrigin =
+        PortalTransform::TransformPoint(entryToExit, linearFrameEndCenter) + originFromCenter;
+    const Vector postCommitCommandEndEstimate =
+        newOrigin + newVelocity * commandInterval;
+    const Vector officialComparedCommandEndOrigin = projectedPath
+        ? officialCrossingCommandEndOrigin
+        : postCommitCommandEndEstimate;
+    const Vector currentComparedCommandEndEstimate = postCommitCommandEndEstimate;
+    const Vector commitToOfficialDelta =
+        officialCrossingCommandEndOrigin - newOrigin;
+    const Vector currentToOfficialDelta =
+        currentComparedCommandEndEstimate - officialComparedCommandEndOrigin;
+    const float commitToOfficialDistance = std::sqrt(commitToOfficialDelta.LenghtSqr());
+    const float currentToOfficialDistance = std::sqrt(currentToOfficialDelta.LenghtSqr());
+
+    U::LogInfo("[PortalMovementCommandTiming] txn=%u entry=%s exit=%s cmd=%d path=%s crossingWindow=%s comparisonKind=%s model=linear-no-collision behaviorMutation=false onGround=%s interval=%.6f observedDepth=%.3f linearFrameEndDepth=%.3f commitDepth=%.3f crossesInsideCommand=%s planeCrossingTime=%.6f postPortalCommandTime=%.6f projectedLeadTime=%.6f observedCenter=(%.3f %.3f %.3f) commitCenter=(%.3f %.3f %.3f) linearFrameEndCenter=(%.3f %.3f %.3f) committedOrigin=(%.3f %.3f %.3f) officialCrossingCommandEndOrigin=(%.3f %.3f %.3f) officialComparedCommandEndOrigin=(%.3f %.3f %.3f) currentComparedCommandEndEstimate=(%.3f %.3f %.3f) commitToOfficialDelta=(%.3f %.3f %.3f) commitToOfficialDistance=%.3f currentToOfficialDelta=(%.3f %.3f %.3f) currentToOfficialDistance=%.3f portalZ=(entry=%.3f exit=%.3f delta=%.3f).\n",
+        continuityTransactionId,
+        SideName(probe.side),
+        SideName(exitSide),
+        m_context.teleportCommandNumber,
+        projectedPath ? "projected" : "live",
+        projectedPath ? "current-command" : "previous-command",
+        projectedPath
+            ? "crossing-command-full-tick-overshoot"
+            : "post-commit-command-alignment",
+        BoolText(wasOnGround),
+        commandInterval,
+        observedDepth,
+        linearFrameEndDepth,
+        probe.centerDistance,
+        BoolText(crossesInsideCommand),
+        planeCrossingTime,
+        postPortalCommandTime,
+        projectedLeadTime,
+        observedCenter.x, observedCenter.y, observedCenter.z,
+        anchor.center.x, anchor.center.y, anchor.center.z,
+        linearFrameEndCenter.x, linearFrameEndCenter.y, linearFrameEndCenter.z,
+        newOrigin.x, newOrigin.y, newOrigin.z,
+        officialCrossingCommandEndOrigin.x,
+        officialCrossingCommandEndOrigin.y,
+        officialCrossingCommandEndOrigin.z,
+        officialComparedCommandEndOrigin.x,
+        officialComparedCommandEndOrigin.y,
+        officialComparedCommandEndOrigin.z,
+        currentComparedCommandEndEstimate.x,
+        currentComparedCommandEndEstimate.y,
+        currentComparedCommandEndEstimate.z,
+        commitToOfficialDelta.x, commitToOfficialDelta.y, commitToOfficialDelta.z,
+        commitToOfficialDistance,
+        currentToOfficialDelta.x, currentToOfficialDelta.y, currentToOfficialDelta.z,
+        currentToOfficialDistance,
+        probe.entry->origin.z,
+        probe.exit->origin.z,
+        probe.exit->origin.z - probe.entry->origin.z);
+
     G::G_L4D2Portal.m_PortalTransition.PublishPortalEyeTeleport(
         entryToExit,
         probe.exit->origin,
@@ -1089,6 +1305,11 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
     m_lastCommittedMovementVelocity = newVelocity;
     m_lastCommittedMovementAngles = newAngles;
     m_hasLastCommittedMovement = m_lastCommittedMovementCommandNumber > 0;
+    m_lastPrePortalViewAngles = sourceAngles;
+    m_lastCommittedEntryToExit = entryToExit;
+    m_hasLastCommittedEntryToExit = m_hasLastCommittedMovement;
+    m_serverPortalCommandAngleFixPending = m_hasLastCommittedEntryToExit;
+    m_lastCommittedTransactionId = continuityTransactionId;
     return true;
 }
 

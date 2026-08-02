@@ -17,8 +17,6 @@ namespace U::PortalFileLog
     inline constexpr bool kCaptureRenderDiagnostics = true;
     inline constexpr bool kSuppressLegacyConsoleNoise = true;
 
-    inline bool g_Initialized = false;
-
     inline constexpr const char* kAlwaysNeedles[] = {
         "PortalFileLog",
         "PortalBsp",
@@ -37,13 +35,27 @@ namespace U::PortalFileLog
         "PortalBounds",
         "PortalNearMiss",
         "PortalGModOffset",
-        "PortalPredictionSync",
+        "PortalPredictionObservation",
+		"PortalPredictionCommitSync",
+		"PortalPredictionMovement",
+        "PortalMovementCommandTiming",
+        "PortalRenderCadence",
+        "PortalPredictionFinish",
+        "PortalTxnBoundary",
+        "PortalServerTeleportTxn",
+        "PortalServerRunCommandHook",
+        "PortalServerRunCommand",
+        "PortalEyeResidualBaseline",
         "PortalLocalClamp",
         "PortalCrossing",
         "PortalVisualTxn",
         "PortalTeleportCommit",
         "PortalContinuity",
         "PortalEyeHistory",
+        "PortalEyeShadowPredictor",
+        "PortalEyeSafety",
+        "PortalPredictionCommandWindow",
+        "PortalVisualMarker",
         "PortalExitRearm",
         "PortalExitState",
         "PortalRestoreWalk",
@@ -157,78 +169,22 @@ namespace U::PortalFileLog
         return ContainsAny(text, kLegacyConsoleNoiseNeedles, sizeof(kLegacyConsoleNoiseNeedles) / sizeof(kLegacyConsoleNoiseNeedles[0]));
     }
 
-    inline void EnsureInitialized()
-    {
-        if (g_Initialized)
-            return;
+    // Runtime file I/O is implemented out-of-line so every caller shares one
+    // persistent, fully buffered session instead of reopening the file for
+    // every diagnostic record.
+    void Reset();
+    void Write(const char* text);
+    void WriteFormat(const char* format, ...);
 
-        FILE* file = nullptr;
-        if (fopen_s(&file, kPath, "wb") == 0 && file)
-        {
-            std::fprintf(file, "[PortalFileLog] reset path=%s\n", kPath);
-            std::fprintf(file, "[PortalFileLog] capture gmod=%s legacyBridge=%s legacyStageProbe=%s legacySimulator=%s render=%s\n",
-                kCaptureGModTraversal ? "on" : "off",
-                kCaptureLegacyBridge ? "on" : "off",
-                kCaptureLegacyStageProbe ? "on" : "off",
-                kCaptureLegacySimulator ? "on" : "off",
-                kCaptureRenderDiagnostics ? "on" : "off");
-            std::fclose(file);
-            g_Initialized = true;
-        }
-    }
+    // Critical runtime evidence bypasses tag routing but remains buffered.
+    void WriteAlways(const char* text);
+    void WriteAlwaysFormat(const char* format, ...);
 
-    inline void AppendMarker(const char* marker)
-    {
-        EnsureInitialized();
+    void Flush();
+    void Shutdown();
 
-        FILE* file = nullptr;
-        if (fopen_s(&file, kPath, "ab") != 0 || !file)
-            return;
-
-        std::fprintf(file, "[PortalFileLog] %s path=%s\n", marker ? marker : "marker", kPath);
-        std::fclose(file);
-    }
-
-    inline void Reset()
-    {
-        if (!g_Initialized)
-        {
-            EnsureInitialized();
-            return;
-        }
-
-        AppendMarker("portal init marker");
-    }
-
-    inline void Write(const char* text)
-    {
-        if (!ShouldCapture(text))
-            return;
-
-        EnsureInitialized();
-
-        FILE* file = nullptr;
-        if (fopen_s(&file, kPath, "ab") != 0 || !file)
-            return;
-
-        std::fputs(text, file);
-        const size_t len = std::strlen(text);
-        if (len == 0 || text[len - 1] != '\n')
-            std::fputc('\n', file);
-
-        std::fclose(file);
-    }
-
-    inline void WriteFormat(const char* format, ...)
-    {
-        if (!format)
-            return;
-
-        char buffer[2048];
-        va_list args;
-        va_start(args, format);
-        vsprintf_s(buffer, format, args);
-        va_end(args);
-        Write(buffer);
-    }
+    const char* GetBuildId();
+    const char* GetLoadedModulePath();
+    bool IsSessionOpen();
+    unsigned int GetSessionOpenCountForDiagnostics();
 }

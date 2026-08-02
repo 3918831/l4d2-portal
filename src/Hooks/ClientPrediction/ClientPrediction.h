@@ -32,6 +32,13 @@ namespace Hooks
 			void __fastcall Detour(void* ecx, void* edx, C_BasePlayer* player, CUserCmd* ucmd, CMoveData* move);
 		}
 
+		CUserCmd* GetActiveCommand();
+		void LogTransactionBoundary(
+			const char* stage,
+			C_BasePlayer* player,
+			CUserCmd* ucmd,
+			CMoveData* move);
+
 		void Init();
 	}
 }

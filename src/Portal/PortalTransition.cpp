@@ -113,6 +113,70 @@ namespace
         return { value.x, value.y, value.z };
     }
 
+    PortalRenderCadence::Vec3 ToRenderCadenceVec3(const Vector& value)
+    {
+        return { value.x, value.y, value.z };
+    }
+
+    void LogRenderCadenceSummary(
+        const char* reason,
+        const PortalRenderCadence::Summary& summary)
+    {
+        U::LogInfo(
+            "[PortalRenderCadenceSummary] txn=%u committedCmd=%d reason=%s frames=%d commandTransitions=%d tickTransitions=%d frozen(calcInput=%d raw=%d original=%d adapter=%d final=%d abs=%d render=%d network=%d old=%d simTime=%d) maxFrozenRun(calcInput=%d raw=%d original=%d adapter=%d final=%d abs=%d render=%d network=%d old=%d simTime=%d) maxDelta(calcInput=%.3f raw=%.3f original=%.3f adapter=%.3f final=%.3f abs=%.3f render=%.3f network=%.3f old=%.3f simTime=%.6f) speed(samples=%d historyFrames=%d shadowFrames=%d postHistoryFrames=%d underFrames=%d historyUnder=%d postHistoryUnder=%d maxUnderRun=%d finalRatio=%.3f/%.3f/%.3f adapterRatio=%.3f/%.3f/%.3f threshold=%.3f) behaviorMutation=false.\n",
+            summary.transactionId,
+            summary.committedCommandNumber,
+            reason ? reason : "unknown",
+            summary.frameCount,
+            summary.commandTransitions,
+            summary.tickTransitions,
+            summary.calcViewInputFrozenFrames,
+            summary.rawFrozenFrames,
+            summary.originalFrozenFrames,
+            summary.appliedFrozenFrames,
+            summary.finalViewFrozenFrames,
+            summary.originFrozenFrames,
+            summary.renderOriginFrozenFrames,
+            summary.networkOriginFrozenFrames,
+            summary.oldOriginFrozenFrames,
+            summary.simulationTimeFrozenFrames,
+            summary.maxCalcViewInputConsecutiveFrozenFrames,
+            summary.maxRawConsecutiveFrozenFrames,
+            summary.maxOriginalConsecutiveFrozenFrames,
+            summary.maxAppliedConsecutiveFrozenFrames,
+            summary.maxFinalViewConsecutiveFrozenFrames,
+            summary.maxOriginConsecutiveFrozenFrames,
+            summary.maxRenderOriginConsecutiveFrozenFrames,
+            summary.maxNetworkOriginConsecutiveFrozenFrames,
+            summary.maxOldOriginConsecutiveFrozenFrames,
+            summary.maxSimulationTimeConsecutiveFrozenFrames,
+            summary.maxCalcViewInputDeltaLength,
+            summary.maxRawDeltaLength,
+            summary.maxOriginalDeltaLength,
+            summary.maxAppliedDeltaLength,
+            summary.maxFinalViewDeltaLength,
+            summary.maxOriginDeltaLength,
+            summary.maxRenderOriginDeltaLength,
+            summary.maxNetworkOriginDeltaLength,
+            summary.maxOldOriginDeltaLength,
+            summary.maxSimulationTimeDelta,
+            summary.speedSampleFrames,
+            summary.eyeHistoryActiveFrames,
+            summary.shadowPredictorAppliedFrames,
+            summary.postEyeHistoryFrames,
+            summary.finalViewUnderSpeedFrames,
+            summary.eyeHistoryUnderSpeedFrames,
+            summary.postEyeHistoryUnderSpeedFrames,
+            summary.maxFinalViewUnderSpeedRun,
+            summary.minFinalViewSpeedRatio,
+            summary.averageFinalViewSpeedRatio,
+            summary.maxFinalViewSpeedRatio,
+            summary.minAppliedSpeedRatio,
+            summary.averageAppliedSpeedRatio,
+            summary.maxAppliedSpeedRatio,
+            PortalRenderCadence::Tracker::kUnderSpeedRatio);
+    }
+
     float VectorLengthSqr(const Vector& value)
     {
         return value.x * value.x + value.y * value.y + value.z * value.z;
@@ -190,6 +254,31 @@ namespace
         *value = *reinterpret_cast<const unsigned char*>(address);
         return true;
     }
+
+    struct EyeSafetySnapshot
+    {
+        int leaf = -1;
+        int worldContents = -1;
+        int playerSolidContents = -1;
+        bool outsideWorld = true;
+        bool available = false;
+    };
+
+    EyeSafetySnapshot CaptureEyeSafetySnapshot(const Vector& point)
+    {
+        EyeSafetySnapshot snapshot;
+        if (!I::EngineTrace || !IsFiniteVector(point))
+            return snapshot;
+
+        snapshot.leaf = I::EngineTrace->GetLeafContainingPoint(point);
+        snapshot.worldContents =
+            I::EngineTrace->GetPointContents_WorldOnly(point, MASK_ALL);
+        snapshot.playerSolidContents =
+            I::EngineTrace->GetPointContents(point, MASK_PLAYERSOLID);
+        snapshot.outsideWorld = I::EngineTrace->PointOutsideWorld(point);
+        snapshot.available = true;
+        return snapshot;
+    }
 }
 
 void CPortalTransition::Reset()
@@ -201,8 +290,11 @@ void CPortalTransition::Reset()
     m_visualTransition = {};
     m_toneTransition = {};
     m_eyeContinuity.Reset();
+    m_eyeShadowPredictor.Reset();
+    m_eyeShadowDiagnosticLogGate.Reset();
+    m_renderCadence.Reset();
+    m_renderCadenceCalcView = {};
     m_eyeContinuityTransactionId = 0;
-    m_eyeContinuityLogFramesRemaining = 0;
     m_eyeContinuityLastCalcViewFrame = -1;
     m_eyeContinuityCalcViewCallOrdinal = 0;
     m_lastExitPortal = PortalSide::None;
@@ -212,6 +304,7 @@ void CPortalTransition::Reset()
     m_nextNearClipLogTime = 0.0f;
     m_nextEntryCameraLogTime = 0.0f;
     m_nextExitVisibilityLogTime = 0.0f;
+    m_nextEyeResidualBaselineLogTime = 0.0f;
     m_pendingEnvironmentRenderFrames = 0;
 }
 
@@ -234,7 +327,34 @@ bool CPortalTransition::PublishPortalEyeTeleport(
     if (published)
     {
         m_eyeContinuityTransactionId = transactionId;
-        m_eyeContinuityLogFramesRemaining = 16;
+        if (PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+        {
+            const PortalRenderCadence::BeginResult cadenceBegin =
+                m_renderCadence.BeginTransaction(
+                    transactionId,
+                    commandNumber,
+                    ToRenderCadenceVec3(exitPlaneNormal));
+            m_renderCadenceCalcView = {};
+            if (cadenceBegin.superseded)
+            {
+                LogRenderCadenceSummary(
+                    "superseded-by-new-transaction",
+                    cadenceBegin.supersededSummary);
+            }
+            U::LogInfo(
+                "[PortalRenderCadenceBegin] txn=%u committedCmd=%d accepted=%s exitNormal=(%.4f %.4f %.4f) behaviorMutation=false.\n",
+                transactionId,
+                commandNumber,
+                BoolText(cadenceBegin.accepted),
+                exitPlaneNormal.x,
+                exitPlaneNormal.y,
+                exitPlaneNormal.z);
+        }
+        else
+        {
+            m_renderCadence.Reset();
+            m_renderCadenceCalcView = {};
+        }
     }
 
     U::LogInfo("[PortalEyeHistoryPending] txn=%u epoch=%u cmd=%d enabled=%s initializedBefore=%s pendingBefore=%s published=%s pendingAfter=%s exitPlaneOrigin=(%.3f %.3f %.3f) exitPlaneNormal=(%.4f %.4f %.4f).\n",
@@ -265,6 +385,9 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
     {
         m_eyeContinuityLastCalcViewFrame = frameCount;
         m_eyeContinuityCalcViewCallOrdinal = 0;
+        m_renderCadenceCalcView.eyeHistoryActive = false;
+        m_renderCadenceCalcView.eyeHistoryReleased = false;
+        m_renderCadenceCalcView.shadowPredictorApplied = false;
     }
     else
     {
@@ -286,19 +409,48 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         rawPhysicalEye,
         originalViewEye,
         frameTime);
+    const float predictionHorizon = I::GlobalVars
+        ? I::GlobalVars->interval_per_tick
+        : 0.0f;
+    const PortalEyeContinuity::ShadowPredictionResult shadowResult =
+        m_eyeShadowPredictor.Update(
+            PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+            result.overrideOriginalView,
+            result.consumedPendingTeleport,
+            result.eyeOrigin,
+            rawPhysicalEye,
+            playerVelocity,
+            frameTime,
+            predictionHorizon,
+            m_eyeContinuityCalcViewCallOrdinal == 0);
+    const Vector candidateEye = shadowResult.eyeOrigin;
+    const float candidateExitDepth = result.outputExitDepth
+        + shadowResult.predictionOffset.Dot(result.activeExitPlaneNormal);
 
     int candidateLeaf = -1;
     int originalLeaf = -1;
+    EyeSafetySnapshot candidateSafety;
     bool runtimeSafetyFallback = false;
     const char* runtimeSafetyReason = "none";
     if (result.overrideOriginalView && I::EngineTrace)
     {
-        candidateLeaf = I::EngineTrace->GetLeafContainingPoint(result.eyeOrigin);
+        candidateSafety = CaptureEyeSafetySnapshot(candidateEye);
+        candidateLeaf = candidateSafety.leaf;
         originalLeaf = I::EngineTrace->GetLeafContainingPoint(originalViewEye);
-        if (result.outputExitDepth < -0.001f)
+        if (candidateExitDepth < -0.001f)
         {
             runtimeSafetyFallback = true;
             runtimeSafetyReason = "negative-exit-depth";
+        }
+        else if (!candidateSafety.available || candidateSafety.outsideWorld)
+        {
+            runtimeSafetyFallback = true;
+            runtimeSafetyReason = "candidate-outside-world";
+        }
+        else if (candidateSafety.playerSolidContents != 0)
+        {
+            runtimeSafetyFallback = true;
+            runtimeSafetyReason = "candidate-player-solid";
         }
         else if (candidateLeaf <= 0)
         {
@@ -318,18 +470,25 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         // traversal's custom interpolation instead of allowing a visual-only
         // residual to select a different BSP leaf.
         m_eyeContinuity.Reset();
+        m_eyeShadowPredictor.Reset();
         eyeOrigin = originalViewEye;
     }
     else if (result.overrideOriginalView)
     {
-        eyeOrigin = result.eyeOrigin;
+        eyeOrigin = candidateEye;
     }
+
+    m_renderCadenceCalcView.eyeHistoryActive =
+        result.overrideOriginalView && !runtimeSafetyFallback;
+    m_renderCadenceCalcView.eyeHistoryReleased =
+        m_renderCadenceCalcView.eyeHistoryReleased || result.releasedOverride;
+    m_renderCadenceCalcView.shadowPredictorApplied =
+        shadowResult.applied && !runtimeSafetyFallback;
 
     const bool shouldLog =
         result.consumedPendingTeleport
         || result.releasedOverride
-        || runtimeSafetyFallback
-        || (result.overrideOriginalView && m_eyeContinuityLogFramesRemaining > 0);
+        || runtimeSafetyFallback;
     if (shouldLog)
     {
         const PortalTransitionContext& context =
@@ -403,16 +562,368 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             result.rawResidual,
             result.originalViewResidual,
             frameTime);
+
+        if (PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+        {
+            U::LogInfo("[PortalEyeHistoryCandidate] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d diagnosticMutation=false consumed=%s overriding=%s planeConstrained=%s unconstrainedEye=(%.3f %.3f %.3f) outputEye=(%.3f %.3f %.3f) originalEye=(%.3f %.3f %.3f) unconstrainedExitDepth=%.3f outputExitDepth=%.3f originalExitDepth=%.3f normalCorrection=%.3f unconstrainedOriginalResidual=%.3f outputOriginalResidual=%.3f outputChanged=false.\n",
+                m_eyeContinuityTransactionId,
+                result.traversalEpoch,
+                result.commandNumber,
+                frameCount,
+                m_eyeContinuityCalcViewCallOrdinal,
+                BoolText(result.consumedPendingTeleport),
+                BoolText(result.overridingAfter),
+                BoolText(result.planeConstrained),
+                result.unconstrainedEye.x,
+                result.unconstrainedEye.y,
+                result.unconstrainedEye.z,
+                result.continuityEyeAfter.x,
+                result.continuityEyeAfter.y,
+                result.continuityEyeAfter.z,
+                originalViewEye.x,
+                originalViewEye.y,
+                originalViewEye.z,
+                result.unconstrainedExitDepth,
+                result.outputExitDepth,
+                result.originalExitDepth,
+                result.normalCorrection,
+                result.unconstrainedOriginalResidual,
+                result.originalViewResidual);
+
+            const EyeSafetySnapshot rawSafety =
+                CaptureEyeSafetySnapshot(rawPhysicalEye);
+            const EyeSafetySnapshot originalSafety =
+                CaptureEyeSafetySnapshot(originalViewEye);
+            const EyeSafetySnapshot unconstrainedSafety =
+                CaptureEyeSafetySnapshot(result.unconstrainedEye);
+            const EyeSafetySnapshot constrainedSafety =
+                CaptureEyeSafetySnapshot(result.eyeOrigin);
+            const EyeSafetySnapshot appliedSafety =
+                CaptureEyeSafetySnapshot(eyeOrigin);
+            trace_t eyeTrace = {};
+            eyeTrace.fraction = 1.0f;
+            if (I::EngineTrace)
+            {
+                Ray_t ray;
+                ray.Init(rawPhysicalEye, eyeOrigin);
+                CTraceFilterWorldAndPropsOnly filter;
+                I::EngineTrace->TraceRay(
+                    ray,
+                    MASK_PLAYERSOLID,
+                    &filter,
+                    &eyeTrace);
+            }
+            U::LogInfo(
+                "[PortalEyeSafety] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d diagnosticMutation=false raw=(leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) original=(leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) unconstrained=(leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) constrained=(leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) applied=(leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) rawToAppliedTrace=(fraction=%.4f startsolid=%s allsolid=%s end=(%.3f %.3f %.3f)).\n",
+                m_eyeContinuityTransactionId,
+                result.traversalEpoch,
+                result.commandNumber,
+                frameCount,
+                m_eyeContinuityCalcViewCallOrdinal,
+                rawSafety.leaf,
+                rawSafety.worldContents,
+                rawSafety.playerSolidContents,
+                BoolText(rawSafety.outsideWorld),
+                BoolText(rawSafety.available),
+                originalSafety.leaf,
+                originalSafety.worldContents,
+                originalSafety.playerSolidContents,
+                BoolText(originalSafety.outsideWorld),
+                BoolText(originalSafety.available),
+                unconstrainedSafety.leaf,
+                unconstrainedSafety.worldContents,
+                unconstrainedSafety.playerSolidContents,
+                BoolText(unconstrainedSafety.outsideWorld),
+                BoolText(unconstrainedSafety.available),
+                constrainedSafety.leaf,
+                constrainedSafety.worldContents,
+                constrainedSafety.playerSolidContents,
+                BoolText(constrainedSafety.outsideWorld),
+                BoolText(constrainedSafety.available),
+                appliedSafety.leaf,
+                appliedSafety.worldContents,
+                appliedSafety.playerSolidContents,
+                BoolText(appliedSafety.outsideWorld),
+                BoolText(appliedSafety.available),
+                eyeTrace.fraction,
+                BoolText(eyeTrace.startsolid),
+                BoolText(eyeTrace.allsolid),
+                eyeTrace.endpos.x,
+                eyeTrace.endpos.y,
+                eyeTrace.endpos.z);
+        }
     }
 
-    if (result.overrideOriginalView && m_eyeContinuityLogFramesRemaining > 0)
-        --m_eyeContinuityLogFramesRemaining;
+    const bool shouldLogShadowPredictor =
+        m_eyeShadowDiagnosticLogGate.ShouldLog(
+            shadowResult,
+            result.consumedPendingTeleport,
+            result.releasedOverride,
+            runtimeSafetyFallback);
+    if (PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()
+        && shouldLogShadowPredictor)
+    {
+        U::LogInfo(
+            "[PortalEyeShadowPredictor] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d enabled=%s continuityActive=%s restart=%s initialized=%s->%s rawAdvanced=%s advanceFrameClock=%s worldSpaceAdvanced=%s applied=%s horizonClamped=%s predictionElapsed=%.6f->%.6f predictionHorizon=%.6f baselineEye=(%.3f %.3f %.3f) baselineDelta=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) rawDelta=(%.3f %.3f %.3f) shadowEye=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) shadowFrameDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) predictionOffset=(%.3f %.3f %.3f) candidateEye=(%.3f %.3f %.3f) candidateExitDepth=%.3f runtimeSafetyFallback=%s runtimeSafetyReason=%s physicsMutation=false viewMutation=%s.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            frameCount,
+            m_eyeContinuityCalcViewCallOrdinal,
+            BoolText(shadowResult.enabled),
+            BoolText(shadowResult.active),
+            BoolText(shadowResult.restarted),
+            BoolText(shadowResult.initializedBefore),
+            BoolText(shadowResult.initializedAfter),
+            BoolText(shadowResult.rawAdvanced),
+            BoolText(m_eyeContinuityCalcViewCallOrdinal == 0),
+            BoolText(shadowResult.worldSpaceAdvanced),
+            BoolText(shadowResult.applied),
+            BoolText(shadowResult.horizonClamped),
+            shadowResult.predictionElapsedBefore,
+            shadowResult.predictionElapsed,
+            shadowResult.predictionHorizon,
+            shadowResult.baselineEye.x,
+            shadowResult.baselineEye.y,
+            shadowResult.baselineEye.z,
+            shadowResult.baselineDelta.x,
+            shadowResult.baselineDelta.y,
+            shadowResult.baselineDelta.z,
+            rawPhysicalEye.x,
+            rawPhysicalEye.y,
+            rawPhysicalEye.z,
+            shadowResult.rawEyeDelta.x,
+            shadowResult.rawEyeDelta.y,
+            shadowResult.rawEyeDelta.z,
+            shadowResult.shadowEyeBefore.x,
+            shadowResult.shadowEyeBefore.y,
+            shadowResult.shadowEyeBefore.z,
+            shadowResult.shadowEyeAfter.x,
+            shadowResult.shadowEyeAfter.y,
+            shadowResult.shadowEyeAfter.z,
+            shadowResult.shadowFrameDelta.x,
+            shadowResult.shadowFrameDelta.y,
+            shadowResult.shadowFrameDelta.z,
+            playerVelocity.x,
+            playerVelocity.y,
+            playerVelocity.z,
+            shadowResult.predictionOffset.x,
+            shadowResult.predictionOffset.y,
+            shadowResult.predictionOffset.z,
+            candidateEye.x,
+            candidateEye.y,
+            candidateEye.z,
+            candidateExitDepth,
+            BoolText(runtimeSafetyFallback),
+            runtimeSafetyReason,
+            BoolText(shadowResult.applied && !runtimeSafetyFallback));
+    }
+
     if (result.releasedOverride || runtimeSafetyFallback)
     {
         m_eyeContinuityTransactionId = 0;
-        m_eyeContinuityLogFramesRemaining = 0;
     }
     return result.overrideOriginalView && !runtimeSafetyFallback;
+}
+
+void CPortalTransition::CapturePortalRenderCadenceCalcView(
+    C_BasePlayer* player,
+    const Vector& calcViewInputEye,
+    const Vector& originalViewEye,
+    const Vector& adaptedViewEye)
+{
+    if (!player || !IsLocalPlayer(player))
+        return;
+
+    if (!PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+    {
+        m_renderCadence.Reset();
+        m_renderCadenceCalcView = {};
+        return;
+    }
+    if (!m_renderCadence.IsActive())
+        return;
+
+    m_renderCadenceCalcView.valid = true;
+    m_renderCadenceCalcView.frameCount =
+        I::GlobalVars ? I::GlobalVars->framecount : -1;
+    m_renderCadenceCalcView.inputEye = calcViewInputEye;
+    m_renderCadenceCalcView.originalEye = originalViewEye;
+    m_renderCadenceCalcView.adaptedEye = adaptedViewEye;
+}
+
+void CPortalTransition::RecordPortalRenderCadence(
+    C_BasePlayer* player,
+    const Vector& finalViewEye)
+{
+    if (!player || !IsLocalPlayer(player))
+        return;
+
+    if (!PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+    {
+        m_renderCadence.Reset();
+        m_renderCadenceCalcView = {};
+        return;
+    }
+    if (!m_renderCadence.IsActive())
+        return;
+
+    const PortalTransitionContext& context =
+        G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
+    const int frameCount = I::GlobalVars ? I::GlobalVars->framecount : -1;
+    const bool calcViewMatched = m_renderCadenceCalcView.valid
+        && m_renderCadenceCalcView.frameCount == frameCount;
+    const Vector rawEye = player->EyePosition();
+    const Vector playerOrigin = player->GetAbsOrigin();
+    const Vector renderOrigin = player->GetRenderOrigin();
+    const Vector networkOrigin = player->m_vecOrigin();
+    const Vector oldOrigin = player->GetOldOrigin();
+    const Vector velocity = player->m_vecVelocity();
+    const Vector calcViewInputEye = calcViewMatched
+        ? m_renderCadenceCalcView.inputEye
+        : rawEye;
+    const Vector originalViewEye = calcViewMatched
+        ? m_renderCadenceCalcView.originalEye
+        : rawEye;
+    const Vector adaptedViewEye = calcViewMatched
+        ? m_renderCadenceCalcView.adaptedEye
+        : finalViewEye;
+
+    PortalRenderCadence::Sample sample;
+    sample.calcViewInputEye = ToRenderCadenceVec3(calcViewInputEye);
+    sample.rawEye = ToRenderCadenceVec3(rawEye);
+    sample.originalEye = ToRenderCadenceVec3(originalViewEye);
+    sample.appliedEye = ToRenderCadenceVec3(adaptedViewEye);
+    sample.finalViewEye = ToRenderCadenceVec3(finalViewEye);
+    sample.playerOrigin = ToRenderCadenceVec3(playerOrigin);
+    sample.renderOrigin = ToRenderCadenceVec3(renderOrigin);
+    sample.networkOrigin = ToRenderCadenceVec3(networkOrigin);
+    sample.oldOrigin = ToRenderCadenceVec3(oldOrigin);
+    sample.velocity = ToRenderCadenceVec3(velocity);
+    sample.simulationTime = player->m_flSimulationTime();
+    sample.frameTime = I::GlobalVars ? I::GlobalVars->frametime : 0.0f;
+    sample.frameCount = frameCount;
+    sample.tickCount = I::GlobalVars ? I::GlobalVars->tickcount : -1;
+    sample.commandNumber = context.lastCommandNumber;
+    sample.eyeHistoryActive = calcViewMatched
+        && m_renderCadenceCalcView.eyeHistoryActive;
+    sample.eyeHistoryReleased = calcViewMatched
+        && m_renderCadenceCalcView.eyeHistoryReleased;
+    sample.shadowPredictorApplied = calcViewMatched
+        && m_renderCadenceCalcView.shadowPredictorApplied;
+
+    const PortalRenderCadence::RecordResult result =
+        m_renderCadence.RecordFrame(sample);
+    if (!result.accepted)
+        return;
+
+    const Vector rawToOriginal = originalViewEye - rawEye;
+    const Vector originToRaw = rawEye - playerOrigin;
+    const float intervalPerTick = I::GlobalVars
+        ? I::GlobalVars->interval_per_tick
+        : 0.0f;
+    const float speed = velocity.Lenght();
+
+    const bool shouldLogCadenceDetail = !result.hasPrevious
+        || result.commandAdvanced
+        || result.tickAdvanced
+        || result.eyeHistoryChanged
+        || result.shadowPredictorChanged
+        || result.finalViewUnderSpeedChanged
+        || result.completed;
+    if (shouldLogCadenceDetail)
+    {
+        U::LogInfo(
+        "[PortalRenderCadenceFrame] txn=%u ordinal=%d frame=%d tick=%d cmd=%d committedCmd=%d commandDelta=%d phase=%s calcViewMatched=%s hasPrevious=%s commandAdvanced=%s tickAdvanced=%s state(eyeHistory=%s released=%s shadowApplied=%s postHistory=%s eyeHistoryChanged=%s shadowChanged=%s) speed(expected=%.3f adapterProjected=%.3f adapterRatio=%.3f finalProjected=%.3f finalRatio=%.3f under=%s underChanged=%s threshold=%.3f) frozen(calcInput=%s raw=%s original=%s adapter=%s final=%s abs=%s render=%s network=%s old=%s simTime=%s) freezeRun(calcInput=%d raw=%d original=%d adapter=%d final=%d abs=%d render=%d network=%d old=%d simTime=%d) deltaLength(calcInput=%.3f raw=%.3f original=%.3f adapter=%.3f final=%.3f abs=%.3f render=%.3f network=%.3f old=%.3f simTime=%.6f) adapterExitNormalDelta=%.3f adapterExitTangentDelta=%.3f behaviorMutation=false.\n",
+        result.transactionId,
+        result.ordinal,
+        sample.frameCount,
+        sample.tickCount,
+        sample.commandNumber,
+        result.summary.committedCommandNumber,
+        sample.commandNumber - result.summary.committedCommandNumber,
+        SimulatorPhaseName(context.phase),
+        BoolText(calcViewMatched),
+        BoolText(result.hasPrevious),
+        BoolText(result.commandAdvanced),
+        BoolText(result.tickAdvanced),
+        BoolText(sample.eyeHistoryActive),
+        BoolText(sample.eyeHistoryReleased),
+        BoolText(sample.shadowPredictorApplied),
+        BoolText(result.postEyeHistory),
+        BoolText(result.eyeHistoryChanged),
+        BoolText(result.shadowPredictorChanged),
+        result.expectedFrameDeltaLength,
+        result.appliedVelocityProjectedDelta,
+        result.appliedSpeedRatio,
+        result.finalViewVelocityProjectedDelta,
+        result.finalViewSpeedRatio,
+        BoolText(result.finalViewUnderSpeed),
+        BoolText(result.finalViewUnderSpeedChanged),
+        PortalRenderCadence::Tracker::kUnderSpeedRatio,
+        BoolText(result.calcViewInputFrozen),
+        BoolText(result.rawFrozen),
+        BoolText(result.originalFrozen),
+        BoolText(result.appliedFrozen),
+        BoolText(result.finalViewFrozen),
+        BoolText(result.originFrozen),
+        BoolText(result.renderOriginFrozen),
+        BoolText(result.networkOriginFrozen),
+        BoolText(result.oldOriginFrozen),
+        BoolText(result.simulationTimeFrozen),
+        result.calcViewInputConsecutiveFrozenFrames,
+        result.rawConsecutiveFrozenFrames,
+        result.originalConsecutiveFrozenFrames,
+        result.appliedConsecutiveFrozenFrames,
+        result.finalViewConsecutiveFrozenFrames,
+        result.originConsecutiveFrozenFrames,
+        result.renderOriginConsecutiveFrozenFrames,
+        result.networkOriginConsecutiveFrozenFrames,
+        result.oldOriginConsecutiveFrozenFrames,
+        result.simulationTimeConsecutiveFrozenFrames,
+        result.calcViewInputDeltaLength,
+        result.rawDeltaLength,
+        result.originalDeltaLength,
+        result.appliedDeltaLength,
+        result.finalViewDeltaLength,
+        result.originDeltaLength,
+        result.renderOriginDeltaLength,
+        result.networkOriginDeltaLength,
+        result.oldOriginDeltaLength,
+        result.simulationTimeDelta,
+        result.appliedExitNormalDelta,
+        result.appliedExitTangentDelta);
+
+        U::LogInfo(
+        "[PortalRenderCadenceSources] txn=%u ordinal=%d frame=%d calcViewMatched=%s calcInputEye=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) originalEye=(%.3f %.3f %.3f) adapterEye=(%.3f %.3f %.3f) finalViewEye=(%.3f %.3f %.3f) absOrigin=(%.3f %.3f %.3f) renderOrigin=(%.3f %.3f %.3f) networkOrigin=(%.3f %.3f %.3f) oldOrigin=(%.3f %.3f %.3f) simulationTime=%.6f originToRawEye=(%.3f %.3f %.3f) rawToOriginal=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) expectedFrameDelta=(%.3f %.3f %.3f) speed=%.3f frameTime=%.6f intervalPerTick=%.6f expectedTickDistance=%.3f behaviorMutation=false.\n",
+        result.transactionId,
+        result.ordinal,
+        sample.frameCount,
+        BoolText(calcViewMatched),
+        calcViewInputEye.x, calcViewInputEye.y, calcViewInputEye.z,
+        rawEye.x, rawEye.y, rawEye.z,
+        originalViewEye.x, originalViewEye.y, originalViewEye.z,
+        adaptedViewEye.x, adaptedViewEye.y, adaptedViewEye.z,
+        finalViewEye.x, finalViewEye.y, finalViewEye.z,
+        playerOrigin.x, playerOrigin.y, playerOrigin.z,
+        renderOrigin.x, renderOrigin.y, renderOrigin.z,
+        networkOrigin.x, networkOrigin.y, networkOrigin.z,
+        oldOrigin.x, oldOrigin.y, oldOrigin.z,
+        sample.simulationTime,
+        originToRaw.x, originToRaw.y, originToRaw.z,
+        rawToOriginal.x, rawToOriginal.y, rawToOriginal.z,
+        velocity.x, velocity.y, velocity.z,
+        result.expectedFrameDelta.x,
+        result.expectedFrameDelta.y,
+        result.expectedFrameDelta.z,
+        speed,
+        sample.frameTime,
+        intervalPerTick,
+        speed * intervalPerTick);
+    }
+
+    if (result.completed)
+        LogRenderCadenceSummary("capture-complete", result.summary);
 }
 
 bool CPortalTransition::ApplyEntryCameraHandoff(
@@ -827,6 +1338,49 @@ void CPortalTransition::LogRenderEnvironmentSnapshot(
     bool isMainView)
 {
     C_TerrorPlayer* player = GetLocalPlayer();
+    const PortalTransitionContext& context =
+        G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
+    if (isMainView && player)
+        RecordPortalRenderCadence(player, view.origin);
+
+    if (isMainView
+        && player
+        && context.phase == PortalTransitionPhase::Idle
+        && !G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.IsCapturingMainView())
+    {
+        const Vector velocity = player->m_vecVelocity();
+        const float speed2D = std::sqrt(
+            velocity.x * velocity.x
+            + velocity.y * velocity.y);
+        constexpr float kHighSpeedBaselineThreshold = 180.0f;
+        const float currentTime =
+            I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
+        if (speed2D >= kHighSpeedBaselineThreshold
+            && ShouldLog(
+                currentTime,
+                m_nextEyeResidualBaselineLogTime,
+                0.05f))
+        {
+            const Vector physicalEye = player->EyePosition();
+            const Vector residual = view.origin - physicalEye;
+            const int flags = player->m_fFlags();
+            U::LogInfo(
+                "[PortalEyeResidualBaseline] phase=Idle portalTxnActive=false time=%.6f frame=%d viewEye=(%.3f %.3f %.3f) physicalEye=(%.3f %.3f %.3f) residual=(%.3f %.3f %.3f) residualLength=%.4f velocity=(%.3f %.3f %.3f) speed2D=%.3f speed3D=%.3f moveType=%u flags=0x%X onGround=%s.\n",
+                currentTime,
+                I::GlobalVars ? I::GlobalVars->framecount : -1,
+                view.origin.x, view.origin.y, view.origin.z,
+                physicalEye.x, physicalEye.y, physicalEye.z,
+                residual.x, residual.y, residual.z,
+                residual.Lenght(),
+                velocity.x, velocity.y, velocity.z,
+                speed2D,
+                velocity.Lenght(),
+                static_cast<unsigned int>(player->m_MoveType()),
+                flags,
+                BoolText((flags & FL_ONGROUND) != 0));
+        }
+    }
+
     if (isMainView
         && G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.IsCapturingMainView())
     {
@@ -842,8 +1396,6 @@ void CPortalTransition::LogRenderEnvironmentSnapshot(
             I::EngineClient ? I::EngineClient->OBSOLETE_Time() : 0.0f;
         continuitySample.frameCount =
             I::GlobalVars ? I::GlobalVars->framecount : -1;
-        const PortalTransitionContext& context =
-            G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
         continuitySample.traversalEpoch = context.traversalEpoch;
         continuitySample.transitionPhase = static_cast<int>(context.phase);
         continuitySample.eyeSemantics =

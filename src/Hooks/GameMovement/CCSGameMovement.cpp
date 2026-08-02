@@ -1,4 +1,5 @@
 #include "CCSGameMovement.h"
+#include "../ClientPrediction/ClientPrediction.h"
 #include "../../Portal/L4D2_Portal.h"
 #include "../../Portal/PortalControlledNoclipMovement.h"
 #include "../../Portal/PortalPhysicsMode.h"
@@ -6,6 +7,7 @@
 #include "../../Util/Logger/Logger.h"
 #include "../../Util/Logger/PortalFileLog.h"
 #include <intrin.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -13,20 +15,6 @@ using namespace Hooks;
 
 namespace
 {
-	const char* PortalTraceClassName(PortalTraceClass traceClass)
-	{
-		switch (traceClass)
-		{
-		case PortalTraceClass::HorizontalMove: return "HorizontalMove";
-		case PortalTraceClass::ZeroLengthPositionTest: return "ZeroLengthPositionTest";
-		case PortalTraceClass::VerticalGroundProbe: return "VerticalGroundProbe";
-		case PortalTraceClass::StepUpDownProbe: return "StepUpDownProbe";
-		case PortalTraceClass::Other:
-		default:
-			return "Other";
-		}
-	}
-
 	const char* PortalPhaseName(PortalTransitionPhase phase)
 	{
 		switch (phase)
@@ -69,30 +57,30 @@ namespace
 		return absolute >= base ? absolute - base : 0u;
 	}
 
-	enum class MovementStage
+	void* g_ServerStayOnGroundCandidateA = nullptr;
+
+	struct PredictionCommitMovementDiagnostics
 	{
-		None,
-		PlayerMove,
-		FullWalkMove,
-		WalkMove,
+		bool active = false;
+		bool syncEnabled = false;
+		int commandNumber = 0;
+		std::uint32_t transactionId = 0;
+		PortalTransitionSide entrySide = PortalTransitionSide::None;
+		PortalTransitionSide exitSide = PortalTransitionSide::None;
+		C_BasePlayer* player = nullptr;
+		unsigned int traceCount = 0;
+		unsigned int hitCount = 0;
+		unsigned int startSolidCount = 0;
+		unsigned int allSolidCount = 0;
+		unsigned int zeroLengthCount = 0;
+		unsigned int horizontalCount = 0;
+		unsigned int verticalGroundCount = 0;
+		unsigned int stepCount = 0;
+		unsigned int otherCount = 0;
+		float minimumHitFraction = 1.0f;
 	};
 
-	const char* MovementStageName(MovementStage stage)
-	{
-		switch (stage)
-		{
-		case MovementStage::PlayerMove: return "PlayerMove";
-		case MovementStage::FullWalkMove: return "FullWalkMove";
-		case MovementStage::WalkMove: return "WalkMove";
-		case MovementStage::None:
-		default:
-			return "None";
-		}
-	}
-
-	thread_local MovementStage g_CurrentMovementStage = MovementStage::None;
-	thread_local const char* g_CurrentMovementDomain = "none";
-	void* g_ServerStayOnGroundCandidateA = nullptr;
+	thread_local PredictionCommitMovementDiagnostics g_predictionCommitMovementDiagnostics;
 
 	bool IsReadableAddressRange(const void* address, size_t size)
 	{
@@ -149,28 +137,6 @@ namespace
 
 		return nullptr;
 	}
-
-	class MovementStageScope
-	{
-	public:
-		MovementStageScope(const char* domain, MovementStage stage)
-			: m_PreviousStage(g_CurrentMovementStage),
-			m_PreviousDomain(g_CurrentMovementDomain)
-		{
-			g_CurrentMovementStage = stage;
-			g_CurrentMovementDomain = domain;
-		}
-
-		~MovementStageScope()
-		{
-			g_CurrentMovementStage = m_PreviousStage;
-			g_CurrentMovementDomain = m_PreviousDomain;
-		}
-
-	private:
-		MovementStage m_PreviousStage;
-		const char* m_PreviousDomain;
-	};
 
 	CMoveData* TryGetMoveDataFromGameMovement(void* gameMovement)
 	{
@@ -375,6 +341,233 @@ namespace
 		default:
 			return nullptr;
 		}
+	}
+
+	PortalTraceClass ClassifyPredictionMovementTrace(
+		const Vector& start,
+		const Vector& end)
+	{
+		constexpr float kMaxVerticalTraceZ = 8.0f;
+		const Vector delta = end - start;
+		const float horizontalSqr = delta.x * delta.x + delta.y * delta.y;
+		const float verticalAbs = std::fabs(delta.z);
+
+		if (horizontalSqr < 0.0001f && verticalAbs < 0.0001f)
+			return PortalTraceClass::ZeroLengthPositionTest;
+		if (horizontalSqr < 0.25f && verticalAbs > 0.5f
+			&& delta.z < 0.0f && verticalAbs <= 4.0f)
+		{
+			return PortalTraceClass::VerticalGroundProbe;
+		}
+		if (horizontalSqr < 16.0f && verticalAbs > kMaxVerticalTraceZ)
+			return PortalTraceClass::StepUpDownProbe;
+		if (horizontalSqr >= 0.25f && verticalAbs <= kMaxVerticalTraceZ)
+			return PortalTraceClass::HorizontalMove;
+		return PortalTraceClass::Other;
+	}
+
+	bool BeginPredictionCommitMovementDiagnostics(
+		CUserCmd* command,
+		C_BasePlayer* player)
+	{
+		g_predictionCommitMovementDiagnostics = {};
+		if (!PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()
+			|| !command)
+		{
+			return false;
+		}
+
+		Vector committedOrigin;
+		Vector committedVelocity;
+		QAngle committedAngles;
+		int commandDelta = 0;
+		std::uint32_t transactionId = 0;
+		if (!G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetCommittedMovementForDiagnostic(
+			command->command_number,
+			&committedOrigin,
+			&committedVelocity,
+			&committedAngles,
+			&commandDelta,
+			&transactionId)
+			|| commandDelta != 0)
+		{
+			return false;
+		}
+
+		const PortalTransitionContext& context =
+			G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
+		g_predictionCommitMovementDiagnostics.active = true;
+		g_predictionCommitMovementDiagnostics.syncEnabled =
+			PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled();
+		g_predictionCommitMovementDiagnostics.commandNumber = command->command_number;
+		g_predictionCommitMovementDiagnostics.transactionId = transactionId;
+		g_predictionCommitMovementDiagnostics.entrySide = context.entrySide;
+		g_predictionCommitMovementDiagnostics.exitSide = context.exitSide;
+		g_predictionCommitMovementDiagnostics.player = player;
+		return true;
+	}
+
+	struct HullOccupancyProbe
+	{
+		float fraction = 1.0f;
+		bool startSolid = false;
+		bool allSolid = false;
+		int contents = 0;
+	};
+
+	void InitDiagnosticHullRay(
+		Ray_t& ray,
+		const Vector& origin,
+		const Vector& mins,
+		const Vector& maxs)
+	{
+		ray.m_Delta.Init();
+		ray.m_IsSwept = false;
+		ray.m_Extents = (maxs - mins) * 0.5f;
+		ray.m_IsRay = ray.m_Extents.LenghtSqr() < 1e-6f;
+		const Vector center = (mins + maxs) * 0.5f;
+		ray.m_Start = origin + center;
+		ray.m_StartOffset = center * -1.0f;
+		ray.m_pWorldAxisTransform = nullptr;
+	}
+
+	HullOccupancyProbe ProbeWorldHull(
+		const Vector& origin,
+		const Vector& mins,
+		const Vector& maxs)
+	{
+		HullOccupancyProbe result;
+		if (!I::EngineTrace)
+			return result;
+
+		Ray_t ray;
+		InitDiagnosticHullRay(ray, origin, mins, maxs);
+		CTraceFilterWorldAndPropsOnly filter;
+		trace_t trace;
+		std::memset(&trace, 0, sizeof(trace));
+		trace.fraction = 1.0f;
+		I::EngineTrace->TraceRay(
+			ray,
+			MASK_PLAYERSOLID,
+			&filter,
+			&trace);
+		result.fraction = trace.fraction;
+		result.startSolid = trace.startsolid;
+		result.allSolid = trace.allsolid;
+		result.contents = trace.contents;
+		return result;
+	}
+
+	void LogPredictionCommitHullOccupancy(
+		C_BasePlayer* player,
+		CMoveData* move)
+	{
+		const PredictionCommitMovementDiagnostics& diagnostics =
+			g_predictionCommitMovementDiagnostics;
+		if (!diagnostics.active || !player || !move)
+			return;
+
+		const Vector origin = move->GetAbsOrigin();
+		const Vector mins = player->GetPlayerMins();
+		const Vector maxs = player->GetPlayerMaxs();
+		const HullOccupancyProbe exact = ProbeWorldHull(origin, mins, maxs);
+
+		U::LogInfo("[PortalPredictionMovementHull] txn=%u cmd=%d entry=%s exit=%s behaviorMutation=false origin=(%.3f %.3f %.3f) hullMins=(%.2f %.2f %.2f) hullMaxs=(%.2f %.2f %.2f) exact=(frac=%.3f startsolid=%s allsolid=%s contents=0x%X).\n",
+			diagnostics.transactionId,
+			diagnostics.commandNumber,
+			PortalSideName(diagnostics.entrySide),
+			PortalSideName(diagnostics.exitSide),
+			origin.x, origin.y, origin.z,
+			mins.x, mins.y, mins.z,
+			maxs.x, maxs.y, maxs.z,
+			exact.fraction, BoolText(exact.startSolid), BoolText(exact.allSolid), exact.contents);
+	}
+
+	void RecordPredictionCommitMovementTrace(
+		const Vector& start,
+		const Vector& end,
+		const trace_t* trace)
+	{
+		PredictionCommitMovementDiagnostics& diagnostics =
+			g_predictionCommitMovementDiagnostics;
+		if (!diagnostics.active || !trace)
+			return;
+
+		const PortalTraceClass traceClass =
+			ClassifyPredictionMovementTrace(start, end);
+		++diagnostics.traceCount;
+		switch (traceClass)
+		{
+		case PortalTraceClass::ZeroLengthPositionTest: ++diagnostics.zeroLengthCount; break;
+		case PortalTraceClass::HorizontalMove: ++diagnostics.horizontalCount; break;
+		case PortalTraceClass::VerticalGroundProbe: ++diagnostics.verticalGroundCount; break;
+		case PortalTraceClass::StepUpDownProbe: ++diagnostics.stepCount; break;
+		case PortalTraceClass::Other:
+		default: ++diagnostics.otherCount; break;
+		}
+
+		const bool hit = trace->fraction < 1.0f || trace->startsolid || trace->allsolid;
+		if (hit)
+		{
+			++diagnostics.hitCount;
+			diagnostics.minimumHitFraction =
+				std::min(diagnostics.minimumHitFraction, trace->fraction);
+		}
+		if (trace->startsolid)
+			++diagnostics.startSolidCount;
+		if (trace->allsolid)
+			++diagnostics.allSolidCount;
+	}
+
+	void LogPredictionCommitMovementSummary(
+		const Vector& originBefore,
+		const Vector& velocityBefore,
+		CMoveData* move)
+	{
+		const PredictionCommitMovementDiagnostics& diagnostics =
+			g_predictionCommitMovementDiagnostics;
+		if (!diagnostics.active || !move)
+			return;
+
+		const Vector originAfter = move->GetAbsOrigin();
+		const Vector velocityAfter = move->m_vecVelocity;
+		const float speedBefore = std::sqrt(
+			velocityBefore.x * velocityBefore.x
+			+ velocityBefore.y * velocityBefore.y);
+		const float speedAfter = std::sqrt(
+			velocityAfter.x * velocityAfter.x
+			+ velocityAfter.y * velocityAfter.y);
+		U::LogInfo("[PortalPredictionMovementSummary] txn=%u cmd=%d syncEnabled=%s entry=%s exit=%s behaviorMutation=false origin=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) originDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) speed2D=%.3f->%.3f speedDrop=%.3f traces=(total=%u hit=%u startsolid=%u allsolid=%u zero=%u horizontal=%u verticalGround=%u step=%u other=%u minHitFraction=%.6f).\n",
+			diagnostics.transactionId,
+			diagnostics.commandNumber,
+			BoolText(diagnostics.syncEnabled),
+			PortalSideName(diagnostics.entrySide),
+			PortalSideName(diagnostics.exitSide),
+			originBefore.x, originBefore.y, originBefore.z,
+			originAfter.x, originAfter.y, originAfter.z,
+			originAfter.x - originBefore.x,
+			originAfter.y - originBefore.y,
+			originAfter.z - originBefore.z,
+			velocityBefore.x, velocityBefore.y, velocityBefore.z,
+			velocityAfter.x, velocityAfter.y, velocityAfter.z,
+			speedBefore,
+			speedAfter,
+			speedBefore - speedAfter,
+			diagnostics.traceCount,
+			diagnostics.hitCount,
+			diagnostics.startSolidCount,
+			diagnostics.allSolidCount,
+			diagnostics.zeroLengthCount,
+			diagnostics.horizontalCount,
+			diagnostics.verticalGroundCount,
+			diagnostics.stepCount,
+			diagnostics.otherCount,
+			diagnostics.minimumHitFraction);
+	}
+
+	void EndPredictionCommitMovementDiagnostics()
+	{
+		g_predictionCommitMovementDiagnostics = {};
 	}
 
 	float ClampFloat(float value, float minValue, float maxValue)
@@ -762,7 +955,7 @@ void LogCategorizeSnapshot(const char* domain, const char* point, uint32_t heart
 
 }
 
-static void HandleTracePlayerBBox(const char* domain, const void* caller, CCSGameMovement::TracePlayerBBox::FN original, void* ecx, void* edx, const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t* pm)
+static void HandleTracePlayerBBox(const char* domain, CCSGameMovement::TracePlayerBBox::FN original, void* ecx, void* edx, const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t* pm)
 {
 	// 打印调试信息
 	//U::LogDebug("[GameMovement] TracePlayerBBox called!\n");
@@ -774,6 +967,13 @@ static void HandleTracePlayerBBox(const char* domain, const void* caller, CCSGam
 	const bool shouldInspectMoveData = G::G_L4D2Portal.m_PortalTransitionSimulator.IsInCollisionBridgePhase();
 
 	original(ecx, edx, start, end, fMask, collisionGroup, pm);
+	if (domain && std::strcmp(domain, "client") == 0)
+	{
+		RecordPredictionCommitMovementTrace(
+			start,
+			end,
+			pm);
+	}
 	if (!shouldInspectMoveData)
 		return;
 
@@ -805,17 +1005,17 @@ static void HandleTracePlayerBBox(const char* domain, const void* caller, CCSGam
 
 void __fastcall CCSGameMovement::TracePlayerBBox::Detour(void* ecx, void* edx, const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t* pm)
 {
-	HandleTracePlayerBBox("server-signature", _ReturnAddress(), Func.Original<FN>(), ecx, edx, start, end, fMask, collisionGroup, pm);
+	HandleTracePlayerBBox("server-signature", Func.Original<FN>(), ecx, edx, start, end, fMask, collisionGroup, pm);
 }
 
 void __fastcall CCSGameMovement::ServerTracePlayerBBox::Detour(void* ecx, void* edx, const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t* pm)
 {
-	HandleTracePlayerBBox("server", _ReturnAddress(), ServerTable.Original<FN>(Index), ecx, edx, start, end, fMask, collisionGroup, pm);
+	HandleTracePlayerBBox("server", ServerTable.Original<FN>(Index), ecx, edx, start, end, fMask, collisionGroup, pm);
 }
 
 void __fastcall CCSGameMovement::ClientTracePlayerBBox::Detour(void* ecx, void* edx, const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t* pm)
 {
-	HandleTracePlayerBBox("client", _ReturnAddress(), ClientTable.Original<FN>(Index), ecx, edx, start, end, fMask, collisionGroup, pm);
+	HandleTracePlayerBBox("client", ClientTable.Original<FN>(Index), ecx, edx, start, end, fMask, collisionGroup, pm);
 }
 
 int __fastcall CCSGameMovement::TryPlayerMove::Detour(void* ecx, void* edx, Vector* pFirstDest, trace_t* pFirstTrace)
@@ -892,7 +1092,6 @@ void __fastcall CCSGameMovement::ClientStepMove::Detour(void* ecx, void* edx, Ve
 
 void __fastcall CCSGameMovement::PlayerMove::Detour(void* ecx, void* edx)
 {
-	MovementStageScope stageScope("server", MovementStage::PlayerMove);
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -915,7 +1114,6 @@ void __fastcall CCSGameMovement::PlayerMove::Detour(void* ecx, void* edx)
 }
 void __fastcall CCSGameMovement::WalkMove::Detour(void* ecx, void* edx)
 {
-	MovementStageScope stageScope("server", MovementStage::WalkMove);
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -940,7 +1138,6 @@ void __fastcall CCSGameMovement::WalkMove::Detour(void* ecx, void* edx)
 
 void __fastcall CCSGameMovement::FullWalkMove::Detour(void* ecx, void* edx)
 {
-	MovementStageScope stageScope("server", MovementStage::FullWalkMove);
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -1017,7 +1214,6 @@ unsigned long __fastcall CCSGameMovement::TestPlayerPosition::Detour(void* ecx, 
 
 void __fastcall CCSGameMovement::ClientPlayerMove::Detour(void* ecx, void* edx)
 {
-	MovementStageScope stageScope("client", MovementStage::PlayerMove);
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -1038,9 +1234,41 @@ void __fastcall CCSGameMovement::ClientPlayerMove::Detour(void* ecx, void* edx)
 	LogFocusedHookProbe("client", "PlayerMove", "Exit", heartbeat, ecx);
 	LogMovementStageSnapshot("client", "PlayerMove", "Exit", heartbeat, ecx, log);
 }
+
+void __fastcall CCSGameMovement::ClientProcessMovement::Detour(
+	void* ecx,
+	void* edx,
+	C_BasePlayer* player,
+	CMoveData* move)
+{
+	CUserCmd* activeCommand = ClientPrediction::GetActiveCommand();
+	const bool diagnosticActive =
+		BeginPredictionCommitMovementDiagnostics(activeCommand, player);
+	const Vector originBefore = move ? move->GetAbsOrigin() : Vector();
+	const Vector velocityBefore = move ? move->m_vecVelocity : Vector();
+	ClientPrediction::LogTransactionBoundary(
+		"processmovement-pre-original",
+		player,
+		activeCommand,
+		move);
+	if (diagnosticActive)
+		LogPredictionCommitHullOccupancy(player, move);
+	ClientTable.Original<FN>(Index)(ecx, edx, player, move);
+	if (diagnosticActive)
+	{
+		LogPredictionCommitMovementSummary(
+			originBefore, velocityBefore, move);
+	}
+	ClientPrediction::LogTransactionBoundary(
+		"processmovement-post-original",
+		player,
+		activeCommand,
+		move);
+	EndPredictionCommitMovementDiagnostics();
+}
+
 void __fastcall CCSGameMovement::ClientWalkMove::Detour(void* ecx, void* edx)
 {
-	MovementStageScope stageScope("client", MovementStage::WalkMove);
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -1065,7 +1293,6 @@ void __fastcall CCSGameMovement::ClientWalkMove::Detour(void* ecx, void* edx)
 
 void __fastcall CCSGameMovement::ClientFullWalkMove::Detour(void* ecx, void* edx)
 {
-	MovementStageScope stageScope("client", MovementStage::FullWalkMove);
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -1191,6 +1418,7 @@ void CCSGameMovement::Init()
 
 
 
+	const bool hookedClientProcessMovement = ClientTable.Hook(&ClientProcessMovement::Detour, ClientProcessMovement::Index);
 	const bool hookedClientTracePlayerBBox = ClientTable.Hook(&ClientTracePlayerBBox::Detour, ClientTracePlayerBBox::Index);
 	const bool hookedClientPlayerMove = ClientTable.Hook(&ClientPlayerMove::Detour, ClientPlayerMove::Index);
 	const bool hookedClientWalkMove = ClientTable.Hook(&ClientWalkMove::Detour, ClientWalkMove::Index);
@@ -1199,8 +1427,10 @@ void CCSGameMovement::Init()
 	const bool hookedClientTestPlayerPosition = false;
 	const bool hookedClientTryPlayerMove = false;
 	const bool hookedClientStepMove = false;
-	U::LogInfo("[PortalBridge] client GameMovement diagnostics gm=%p TracePlayerBBox[%u]=%s PlayerMove[%u]=%s WalkMove[%u]=%s FullWalkMove[%u]=%s CategorizePosition[%u]=%s(skipped: not yet hooked) TestPlayerPosition[%u]=%s(skipped: signature unverified) TryPlayerMove[%u]=%s(skipped: index/signature unverified) StepMove[%u]=%s(skipped: index/signature unverified).\n",
+	U::LogInfo("[PortalBridge] client GameMovement diagnostics gm=%p ProcessMovement[%u]=%s TracePlayerBBox[%u]=%s PlayerMove[%u]=%s WalkMove[%u]=%s FullWalkMove[%u]=%s CategorizePosition[%u]=%s(skipped: not yet hooked) TestPlayerPosition[%u]=%s(skipped: signature unverified) TryPlayerMove[%u]=%s(skipped: index/signature unverified) StepMove[%u]=%s(skipped: index/signature unverified).\n",
 		I::GameMovement,
+		ClientProcessMovement::Index,
+		BoolText(hookedClientProcessMovement),
 		ClientTracePlayerBBox::Index,
 		BoolText(hookedClientTracePlayerBBox),
 		ClientPlayerMove::Index,

@@ -11,6 +11,10 @@ namespace
     bool g_exactExitVisualGuardEnabled = true;
     bool g_entryCameraHandoffEnabled = true;
     bool g_portalEyeContinuityEnabled = true;
+    bool g_portalEyeShadowPredictorEnabled = false;
+    bool g_serverPortalCommandAngleFixEnabled = true;
+    bool g_portalTransactionDiagnosticsEnabled = false;
+    bool g_predictionCommitMovementSyncEnabled = false;
 }
 
 bool PortalTransitionDecision::RequiresControlledNoclip(PortalTransitionPhase phase)
@@ -81,7 +85,7 @@ bool PortalTransitionDecision::IsCommittedTeleportPredictionSyncPhase(PortalTran
         || phase == PortalTransitionPhase::Cooldown;
 }
 
-bool PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
+bool PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
     PortalTransitionPhase phase,
     int commandNumber,
     int committedCommandNumber)
@@ -91,14 +95,108 @@ bool PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
         && commandNumber == committedCommandNumber;
 }
 
-bool PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
+bool PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
+    bool enabled,
     PortalTransitionPhase phase,
     int commandNumber,
     int committedCommandNumber)
 {
-    return IsCommittedTeleportPredictionSyncPhase(phase)
+    return enabled
+        && IsCommittedTeleportPredictionSyncPhase(phase)
         && commandNumber > 0
         && commandNumber == committedCommandNumber;
+}
+
+bool PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled()
+{
+    return g_predictionCommitMovementSyncEnabled;
+}
+
+void PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(bool enabled)
+{
+    g_predictionCommitMovementSyncEnabled = enabled;
+}
+
+PortalServerRunCommandClassification PortalTransitionDecision::ClassifyServerRunCommand(
+    bool hasCommittedTeleport,
+    int commandNumber,
+    int committedCommandNumber,
+    float differenceFromPrePortalAngles,
+    float differenceFromPostPortalAngles)
+{
+    PortalServerRunCommandClassification result;
+    if (!hasCommittedTeleport || committedCommandNumber <= 0)
+    {
+        return result;
+    }
+
+    constexpr int kMaximumDiagnosticCommandDelta = 8;
+    result.commandDelta = commandNumber - committedCommandNumber;
+    if (result.commandDelta < 0)
+        result.timing = PortalServerCommandTiming::BeforeCommit;
+    else if (result.commandDelta == 0)
+        result.timing = PortalServerCommandTiming::CommitCommand;
+    else if (result.commandDelta <= kMaximumDiagnosticCommandDelta)
+        result.timing = PortalServerCommandTiming::AfterCommitWindow;
+    else
+        result.timing = PortalServerCommandTiming::AfterWindow;
+
+    if (!std::isfinite(differenceFromPrePortalAngles)
+        || !std::isfinite(differenceFromPostPortalAngles))
+    {
+        result.angleSpace = PortalCommandAngleSpace::Unknown;
+        return result;
+    }
+
+    constexpr float kAmbiguousAngleDifference = 0.001f;
+    const float relativeDifference =
+        std::fabs(differenceFromPrePortalAngles - differenceFromPostPortalAngles);
+    if (relativeDifference <= kAmbiguousAngleDifference)
+        result.angleSpace = PortalCommandAngleSpace::Ambiguous;
+    else if (differenceFromPrePortalAngles < differenceFromPostPortalAngles)
+        result.angleSpace = PortalCommandAngleSpace::Entry;
+    else
+        result.angleSpace = PortalCommandAngleSpace::Exit;
+
+    return result;
+}
+
+bool PortalTransitionDecision::ShouldApplyServerPortalCommandAngleFix(
+    bool enabled,
+    PortalServerCommandTiming timing,
+    PortalCommandAngleSpace angleSpace)
+{
+    return enabled
+        && timing == PortalServerCommandTiming::CommitCommand
+        && angleSpace == PortalCommandAngleSpace::Entry;
+}
+
+bool PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled()
+{
+    return g_serverPortalCommandAngleFixEnabled;
+}
+
+void PortalTransitionDecision::SetServerPortalCommandAngleFixEnabled(bool enabled)
+{
+    g_serverPortalCommandAngleFixEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()
+{
+    return g_portalTransactionDiagnosticsEnabled;
+}
+
+void PortalTransitionDecision::SetPortalTransactionDiagnosticsEnabled(bool enabled)
+{
+    g_portalTransactionDiagnosticsEnabled = enabled;
+}
+
+bool PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(
+    int commandDelta)
+{
+    // Capture the commit command and the first three commands that can expose
+    // prediction reconciliation. This is a read-only diagnostic window.
+    return commandDelta >= 0 && commandDelta <= 3;
 }
 
 bool PortalTransitionDecision::IsWithinGModWallPortalBounds(
@@ -240,6 +338,16 @@ bool PortalTransitionDecision::GetPortalEyeContinuityEnabled()
 void PortalTransitionDecision::SetPortalEyeContinuityEnabled(bool enabled)
 {
     g_portalEyeContinuityEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled()
+{
+    return g_portalEyeShadowPredictorEnabled;
+}
+
+void PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(bool enabled)
+{
+    g_portalEyeShadowPredictorEnabled = enabled;
 }
 
 bool PortalTransitionDecision::ShouldApplyEntryCameraHandoff(

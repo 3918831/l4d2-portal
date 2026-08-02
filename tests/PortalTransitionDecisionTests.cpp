@@ -291,26 +291,6 @@ int main()
         "a negative cooldown duration must not move the rearm timestamp backward");
 
     Expect(
-        PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
-            PortalTransitionPhase::ExitingPortal, 1521, 1521),
-        "the committed command must publish its teleport result at the prediction finish boundary");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
-            PortalTransitionPhase::ExitingPortal, 1522, 1521),
-        "the command after the teleport must not be reset to the previous committed result");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
-            PortalTransitionPhase::ExitingPortal, 1520, 1521),
-        "a command before the teleport must not consume a future committed result");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
-            PortalTransitionPhase::IntersectingPortal, 1521, 1521),
-        "a new intersection must not consume stale committed teleport movement");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMoveAtPredictionFinish(
-            PortalTransitionPhase::Idle, 1521, 1521),
-        "normal movement must not consume committed teleport sync");
-    Expect(
         PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
             PortalTransitionPhase::ExitingPortal, 1521, 1521),
         "the committed command must use exit-facing angles while its movement is simulated");
@@ -326,6 +306,122 @@ int main()
         !PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
             PortalTransitionPhase::Idle, 1521, 1521),
         "normal movement must not rewrite user command view angles");
+    Expect(
+        PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
+            true, PortalTransitionPhase::ExitingPortal, 1521, 1521),
+        "an enabled commit sync must hand the exact teleport command to movement in exit space");
+    Expect(
+        !PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
+            false, PortalTransitionPhase::ExitingPortal, 1521, 1521),
+        "the control group must leave committed movement untouched");
+    Expect(
+        !PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
+            true, PortalTransitionPhase::Cooldown, 1522, 1521),
+        "committed movement sync must never spill into the following command");
+    Expect(
+        !PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
+            true, PortalTransitionPhase::Idle, 1521, 1521),
+        "normal movement must never receive a committed portal position or velocity");
+    Expect(
+        !PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled(),
+        "prediction commit movement sync must default off for a controlled A/B test");
+    PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled(),
+        "the runtime A/B switch must enable one-shot committed movement sync");
+    PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(false);
+    const auto noCommitCommand =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            false, 1521, 0, 0.0f, 0.0f);
+    Expect(
+        noCommitCommand.timing == PortalServerCommandTiming::NoCommit,
+        "a server command without a committed transaction must remain unclassified");
+    Expect(
+        noCommitCommand.angleSpace == PortalCommandAngleSpace::Unknown,
+        "a server command without a committed transaction has no portal angle space");
+
+    const auto commitEntryCommand =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            true, 1521, 1521, 0.0f, 90.0f);
+    Expect(
+        commitEntryCommand.timing == PortalServerCommandTiming::CommitCommand,
+        "the authoritative command matching the teleport command must be identified");
+    Expect(
+        commitEntryCommand.angleSpace == PortalCommandAngleSpace::Entry,
+        "an authoritative command nearest the pre-portal angles must be entry-space");
+
+    const auto commitExitCommand =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            true, 1521, 1521, 90.0f, 0.0f);
+    Expect(
+        commitExitCommand.angleSpace == PortalCommandAngleSpace::Exit,
+        "an authoritative command nearest the post-portal angles must be exit-space");
+
+    const auto commandBeforeCommit =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            true, 1520, 1521, 1.0f, 89.0f);
+    Expect(
+        commandBeforeCommit.timing == PortalServerCommandTiming::BeforeCommit,
+        "an older server command must be distinguished from the commit command");
+
+    const auto commandAfterCommit =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            true, 1524, 1521, 2.0f, 88.0f);
+    Expect(
+        commandAfterCommit.timing == PortalServerCommandTiming::AfterCommitWindow,
+        "nearby commands after commit must remain inside the bounded diagnostic window");
+
+    const auto commandAfterWindow =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            true, 1530, 1521, 2.0f, 88.0f);
+    Expect(
+        commandAfterWindow.timing == PortalServerCommandTiming::AfterWindow,
+        "commands beyond the diagnostic window must not be confused with the handoff");
+
+    const auto ambiguousAngles =
+        PortalTransitionDecision::ClassifyServerRunCommand(
+            true, 1521, 1521, 45.0f, 45.0005f);
+    Expect(
+        ambiguousAngles.angleSpace == PortalCommandAngleSpace::Ambiguous,
+        "nearly equal angle differences must be reported as ambiguous");
+    Expect(
+        PortalTransitionDecision::ShouldApplyServerPortalCommandAngleFix(
+            true,
+            PortalServerCommandTiming::CommitCommand,
+            PortalCommandAngleSpace::Entry),
+        "the official server adapter must transform only the committed entry-space command");
+    Expect(
+        !PortalTransitionDecision::ShouldApplyServerPortalCommandAngleFix(
+            false,
+            PortalServerCommandTiming::CommitCommand,
+            PortalCommandAngleSpace::Entry),
+        "the server command-angle adapter must support an isolated A/B off path");
+    Expect(
+        !PortalTransitionDecision::ShouldApplyServerPortalCommandAngleFix(
+            true,
+            PortalServerCommandTiming::CommitCommand,
+            PortalCommandAngleSpace::Exit),
+        "an already transformed exit-space command must not be transformed twice");
+    Expect(
+        !PortalTransitionDecision::ShouldApplyServerPortalCommandAngleFix(
+            true,
+            PortalServerCommandTiming::AfterCommitWindow,
+            PortalCommandAngleSpace::Entry),
+        "commands after the committed command must keep their own input angles");
+    Expect(
+        !PortalTransitionDecision::ShouldApplyServerPortalCommandAngleFix(
+            true,
+            PortalServerCommandTiming::CommitCommand,
+            PortalCommandAngleSpace::Ambiguous),
+        "an ambiguous committed command must not be mutated");
+    PortalTransitionDecision::SetServerPortalCommandAngleFixEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled(),
+        "the server command-angle adapter must expose an isolated A/B off path");
+    PortalTransitionDecision::SetServerPortalCommandAngleFixEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled(),
+        "the server command-angle adapter must restore the default on path");
     PortalTransitionDecision::SetPortalEyeContinuityEnabled(false);
     Expect(
         !PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
@@ -334,6 +430,29 @@ int main()
     Expect(
         PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
         "the eye-history continuity adapter must support an isolated A/B on path");
+    Expect(
+        !PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+        "the non-official shadow predictor must default off for an explicit A/B");
+    PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+        "the shadow predictor must be independently enabled without changing physics");
+    PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+        "the shadow predictor control path must remain available");
+    Expect(
+        !PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(-1),
+        "commands before the commit must stay outside the diagnostic window");
+    Expect(
+        PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(0)
+            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(1)
+            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(2)
+            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(3),
+        "the diagnostic window must include commit through commit plus three");
+    Expect(
+        !PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(4),
+        "commands beyond commit plus three must stay outside the diagnostic window");
     Expect(
         PortalTransitionDecision::IsWithinGModWallPortalBounds(16.5f, 0.0f, 0.0f),
         "GMod wall portal bounds accepts a centered player close to the portal plane");

@@ -3,6 +3,7 @@
 #include <cstddef>
 
 class CBaseEntity;
+class Vector;
 
 enum fieldtype_t
 {
@@ -107,6 +108,7 @@ namespace L4D2::ServerDataMap
     datamap_t* GetDataDescMap(CBaseEntity* entity);
     bool FindField(datamap_t* map, const char* fieldName, FieldInfo* outInfo);
     bool TryReadFieldInt(CBaseEntity* entity, const FieldInfo& info, int* outValue);
+    bool TryReadFieldVector(CBaseEntity* entity, const FieldInfo& info, Vector* outValue);
     bool TryWriteFieldInt(CBaseEntity* entity, const FieldInfo& info, int value);
     MoveTypeProbe ProbeMoveType(CBaseEntity* entity);
 }

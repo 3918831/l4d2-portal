@@ -37,8 +37,26 @@ int main()
         "portal-bound probes must be file-only");
     Expect(ShouldSuppressConsole("[PortalTeleportCommit] committed entry=Blue."),
         "teleport commit details must be file-only");
-    Expect(ShouldSuppressConsole("[PortalPredictionSync] committed=true."),
-        "prediction synchronization details must be file-only");
+    Expect(ShouldSuppressConsole("[PortalPredictionObservation] syncApplied=false."),
+        "prediction boundary observations must be file-only");
+	Expect(ShouldSuppressConsole("[PortalPredictionCommitSync] movementSyncApplied=true."),
+		"prediction setup synchronization diagnostics must be file-only");
+	Expect(ShouldSuppressConsole("[PortalMovementCommandTiming] txn=1 path=projected."),
+		"movement command timing diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalRenderCadenceFrame] txn=1 frame=100."),
+        "render-cadence frames must be file-only");
+    Expect(ShouldSuppressConsole("[PortalPredictionFinish] phase=finishmove-post-original."),
+        "post-FinishMove prediction observations must be file-only");
+    Expect(ShouldSuppressConsole("[PortalTxnBoundary] stage=processmovement-post-original."),
+        "transaction prediction boundaries must be file-only");
+    Expect(ShouldSuppressConsole("[PortalServerTeleportTxn] stage=post."),
+        "server teleport transaction snapshots must be file-only");
+    Expect(ShouldSuppressConsole("[PortalServerRunCommandHook] installed=true index=454."),
+        "server PlayerRunCommand hook validation must be file-only");
+    Expect(ShouldSuppressConsole("[PortalServerRunCommand] stage=pre mutation=false."),
+        "server PlayerRunCommand diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalEyeResidualBaseline] phase=Idle."),
+        "non-portal eye residual baselines must be file-only");
     Expect(ShouldSuppressConsole("[PortalBsp][Binding] owner=blue."),
         "detailed BSP binding diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalEnvironment] phase=main-render."),
@@ -63,6 +81,14 @@ int main()
         "portal eye-history publication diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalEyeHistory] txn=1 consumed=true."),
         "portal eye-history update diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalEyeShadowPredictor] txn=1 applied=true."),
+        "portal eye shadow-predictor diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalEyeSafety] txn=1 point=applied."),
+        "portal eye safety diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalPredictionCommandWindow] txn=1 commandDelta=2."),
+        "prediction command-window diagnostics must be file-only");
+    Expect(ShouldSuppressConsole("[PortalVisualMarker] reason=flash txn=1."),
+        "manual visual markers must be file-only");
 
     Expect(ShouldCapture("[PortalHookProbe] domain=client."),
         "file-only traversal probes must still be captured");
@@ -88,6 +114,32 @@ int main()
         "portal eye-history publication diagnostics must be captured");
     Expect(ShouldCapture("[PortalEyeHistory] txn=1 consumed=true."),
         "portal eye-history update diagnostics must be captured");
+    Expect(ShouldCapture("[PortalEyeShadowPredictor] txn=1 applied=true."),
+        "portal eye shadow-predictor diagnostics must be captured");
+    Expect(ShouldCapture("[PortalEyeSafety] txn=1 point=applied."),
+        "portal eye safety diagnostics must be captured");
+    Expect(ShouldCapture("[PortalPredictionCommandWindow] txn=1 commandDelta=2."),
+        "prediction command-window diagnostics must be captured");
+    Expect(ShouldCapture("[PortalVisualMarker] reason=flash txn=1."),
+        "manual visual markers must be captured");
+    Expect(ShouldCapture("[PortalServerRunCommandHook] installed=true index=454."),
+        "server PlayerRunCommand hook validation must be captured");
+    Expect(ShouldCapture("[PortalPredictionFinish] phase=finishmove-post-original."),
+        "post-FinishMove prediction observations must be captured");
+	Expect(ShouldCapture("[PortalPredictionCommitSync] movementSyncApplied=true."),
+		"prediction setup synchronization diagnostics must be captured");
+	Expect(ShouldCapture("[PortalMovementCommandTiming] txn=1 path=projected."),
+		"movement command timing diagnostics must be captured");
+    Expect(ShouldCapture("[PortalRenderCadenceSummary] txn=1 frames=20."),
+        "render-cadence transaction summaries must be captured");
+    Expect(ShouldCapture("[PortalPredictionCommandWindowVelocity] stage=finishmove-post-original."),
+        "prediction command-window velocities must be captured");
+    Expect(ShouldCapture("[PortalServerTeleportTxn] stage=post."),
+        "server teleport transaction snapshots must be captured");
+    Expect(ShouldCapture("[PortalServerRunCommand] stage=pre mutation=false."),
+        "server PlayerRunCommand diagnostics must be captured");
+    Expect(ShouldCapture("[PortalEyeResidualBaseline] phase=Idle."),
+        "non-portal eye residual baselines must be captured");
     Expect(!ShouldCapture("ordinary initialization message"),
         "unrelated console messages must not be added to the focused file log");
 

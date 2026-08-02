@@ -45,6 +45,25 @@ struct PortalTransitionContext
     bool hasSignedDepth = false;
 };
 
+struct PortalServerRunCommandObservation
+{
+    std::uint32_t transactionId = 0;
+    int commandNumber = 0;
+    int committedCommandNumber = 0;
+    int commandDelta = 0;
+    QAngle prePortalAngles;
+    QAngle postPortalAngles;
+    QAngle inputAngles;
+    matrix3x4_t entryToExit = {};
+    float differenceFromPrePortalAngles = 0.0f;
+    float differenceFromPostPortalAngles = 0.0f;
+    PortalServerCommandTiming timing = PortalServerCommandTiming::NoCommit;
+    PortalCommandAngleSpace angleSpace = PortalCommandAngleSpace::Unknown;
+    bool hasCommittedTeleport = false;
+    bool hasEntryToExitMatrix = false;
+    bool commandAngleFixPending = false;
+};
+
 class CPortalTransitionSimulator
 {
 public:
@@ -58,6 +77,17 @@ public:
     PortalTransitionSide GetCollisionBridgeSide() const;
     bool TryCommitMovementCrossing(int commandNumber, const Vector& movementOrigin, const Vector& movementVelocity, Vector* committedOrigin, Vector* committedVelocity);
     bool TryGetCommittedMovementForCommand(int commandNumber, Vector* committedOrigin, Vector* committedVelocity, QAngle* committedAngles = nullptr) const;
+    bool TryGetCommittedMovementForDiagnostic(
+        int commandNumber,
+        Vector* committedOrigin,
+        Vector* committedVelocity,
+        QAngle* committedAngles,
+        int* commandDelta,
+        std::uint32_t* transactionId) const;
+    bool ObserveServerRunCommand(
+        const CUserCmd* cmd,
+        PortalServerRunCommandObservation* result) const;
+    bool ConsumeServerPortalCommandAngleFix(int commandNumber);
 
 private:
     struct PortalProbe
@@ -127,6 +157,11 @@ private:
     Vector m_lastCommittedMovementVelocity;
     QAngle m_lastCommittedMovementAngles;
     bool m_hasLastCommittedMovement = false;
+    QAngle m_lastPrePortalViewAngles;
+    matrix3x4_t m_lastCommittedEntryToExit = {};
+    bool m_hasLastCommittedEntryToExit = false;
+    bool m_serverPortalCommandAngleFixPending = false;
+    std::uint32_t m_lastCommittedTransactionId = 0;
     PortalPlayerAnchor m_previousAnchor;
     Vector m_previousBlueOrigin;
     Vector m_previousBlueNormal;

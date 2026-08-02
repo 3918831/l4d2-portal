@@ -264,7 +264,7 @@ void PortalBspPhase1::LogStatus(const char* reason)
 {
     const PortalBrushBinding& blue = G::PortalBspCollisionCarver.GetBinding(PortalBrushOwner::Blue);
     const PortalBrushBinding& orange = G::PortalBspCollisionCarver.GetBinding(PortalBrushOwner::Orange);
-    U::LogInfo("[PortalBsp][Phase1Status] reason=%s enabled=%s carvingActive=%s pairResolved=%s queryReady=%s generation=%u modified=%zu clearanceMode=%s nearClipFix=%s exactExitVisualGuard=%s entryCameraHandoff=%s remoteView=OfficialExactCameraClipMinus0.5 nearPlaneRenderFix=OfficialStencilProxyOnly depthFogRepair=deferred blue(resolved=%s brush=%d contents=0x%08X generation=%u) orange(resolved=%s brush=%d contents=0x%08X generation=%u) legacyCollisionBypass=false movementMutation=false controlledNoclip=false teleportPredictionSync=%s.\n",
+    U::LogInfo("[PortalBsp][Phase1Status] reason=%s enabled=%s carvingActive=%s pairResolved=%s queryReady=%s generation=%u modified=%zu clearanceMode=%s nearClipFix=%s exactExitVisualGuard=%s entryCameraHandoff=%s eyeHistory=%s shadowPredictor=%s shadowPredictorScope=render-eye-only shadowPredictorHorizon=one-runtime-tick liveMovementMutation=false serverCommandAngleFix=%s transactionDiagnostics=%s predictionDiagnosticWindow=commit-plus-3 predictionCommitSync=%s predictionCommitSyncScope=exact-command-post-setup remoteView=OfficialExactCameraClipMinus0.5 nearPlaneRenderFix=OfficialStencilProxyOnly depthFogRepair=deferred blue(resolved=%s brush=%d contents=0x%08X generation=%u) orange(resolved=%s brush=%d contents=0x%08X generation=%u) legacyCollisionBypass=false movementMutation=false controlledNoclip=false teleportPredictionSync=%s.\n",
         reason ? reason : "unknown",
         BoolText(G::PortalBspCollisionCarver.IsPhase1Enabled()),
         BoolText(G::PortalBspCollisionCarver.IsCarvingActive()),
@@ -277,6 +277,11 @@ void PortalBspPhase1::LogStatus(const char* reason)
         BoolText(PortalTransitionDecision::GetPortalNearClipFixEnabled()),
         BoolText(PortalTransitionDecision::GetExactExitVisualGuardEnabled()),
         BoolText(PortalTransitionDecision::GetEntryCameraHandoffEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalEyeContinuityEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled()),
+        BoolText(PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()),
+        BoolText(PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled()),
         BoolText(blue.resolved), blue.brushIndex, static_cast<unsigned int>(blue.originalContents), blue.mapGeneration,
         BoolText(orange.resolved), orange.brushIndex, static_cast<unsigned int>(orange.originalContents), orange.mapGeneration,
         BoolText(PortalPhysicsMode::ShouldSynchronizeCommittedTeleportPrediction()));

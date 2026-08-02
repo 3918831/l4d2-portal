@@ -53,8 +53,14 @@ namespace PortalVisualContinuity
             const Sample& sample,
             const PredictionBoundaryDetails& details);
         std::uint32_t CaptureMainViewPreRender(const Sample& sample);
+        std::uint32_t MarkUserEvent(
+            const char* reason = "manual-visual-marker") const;
 
         bool IsCapturingMainView() const { return m_tracker.IsActive(); }
+        std::uint32_t GetLastTransactionId() const
+        {
+            return m_tracker.GetLastTransactionId();
+        }
 
     private:
         void LogSample(

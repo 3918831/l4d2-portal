@@ -160,6 +160,24 @@ int main()
             && finalRender.maximum.eyePositionToStage == Stage::TeleportCommit,
         "the summary identifies the exact stage pair that produced the maximum");
     Expect(!tracker.IsActive(), "the tracker closes after the bounded render window");
+    Expect(tracker.GetLastTransactionId() == first.transactionId,
+        "the completed transaction remains addressable for a later user marker");
+    Expect(tracker.GetSampleCount() == Tracker::kMaximumSamples,
+        "all completed transaction samples remain available for a later user marker");
+    Expect(tracker.GetSample(0) != nullptr
+            && tracker.GetSample(0)->stage == Stage::EntryHandoff,
+        "the retained transaction exposes its first sample");
+    Expect(tracker.GetSample(Tracker::kMaximumSamples - 1) != nullptr
+            && tracker.GetSample(Tracker::kMaximumSamples - 1)->stage
+                == Stage::MainViewPreRender,
+        "the retained transaction exposes its final sample");
+    Expect(tracker.GetSample(-1) == nullptr
+            && tracker.GetSample(Tracker::kMaximumSamples) == nullptr,
+        "retained transaction sample lookup fails closed outside its bounds");
+    ExpectNear(
+        tracker.GetMaximum().viewToPhysicalEyeResidual,
+        finalRender.maximum.viewToPhysicalEyeResidual,
+        "the retained transaction exposes its completed maximum diagnostics");
     Expect(!tracker.RecordMainViewPreRender(MakeEyeSample(99.0f, 1.0f, 0, 200)).accepted,
         "render samples after completion are rejected");
 

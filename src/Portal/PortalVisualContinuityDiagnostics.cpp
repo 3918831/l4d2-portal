@@ -171,6 +171,52 @@ std::uint32_t PortalVisualContinuity::Diagnostics::CaptureMainViewPreRender(
     return result.transactionId;
 }
 
+std::uint32_t PortalVisualContinuity::Diagnostics::MarkUserEvent(
+    const char* reason) const
+{
+    const std::uint32_t transactionId = m_tracker.GetLastTransactionId();
+    const int sampleCount = m_tracker.GetSampleCount();
+    const MaximumDelta& maximum = m_tracker.GetMaximum();
+    U::PortalFileLog::WriteFormat(
+        "[PortalVisualMarker] reason=%s txn=%u active=%s sampleCount=%d eyePositionComparable=%s maxEyePositionDelta=%.4f eyeAngleComparable=%s maxEyeAngleDelta=%.4f viewPhysicalComparable=%s maxViewPhysicalEyeResidual=%.4f.\n",
+        reason ? reason : "manual-visual-marker",
+        transactionId,
+        BoolText(m_tracker.IsActive()),
+        sampleCount,
+        BoolText(maximum.hasEyePosition),
+        maximum.eyePosition,
+        BoolText(maximum.hasEyeAngle),
+        maximum.eyeAngle,
+        BoolText(maximum.hasViewToPhysicalEyeResidual),
+        maximum.viewToPhysicalEyeResidual);
+
+    for (int ordinal = 0; ordinal < sampleCount; ++ordinal)
+    {
+        const Sample* sample = m_tracker.GetSample(ordinal);
+        if (!sample)
+            continue;
+
+        U::PortalFileLog::WriteFormat(
+            "[PortalVisualMarkerSample] markerTxn=%u ordinal=%d stage=%s renderIndex=%d epoch=%u cmd=%d time=%.6f frame=%d transitionPhase=%d eye=(%.3f %.3f %.3f) angles=(%.3f %.3f %.3f) physicalEye=(%.3f %.3f %.3f) playerOrigin=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) fov=%.3f.\n",
+            transactionId,
+            ordinal,
+            StageName(sample->stage),
+            sample->renderIndex,
+            sample->traversalEpoch,
+            sample->commandNumber,
+            sample->engineTime,
+            sample->frameCount,
+            sample->transitionPhase,
+            sample->eyeOrigin.x, sample->eyeOrigin.y, sample->eyeOrigin.z,
+            sample->eyeAngles.x, sample->eyeAngles.y, sample->eyeAngles.z,
+            sample->physicalEye.x, sample->physicalEye.y, sample->physicalEye.z,
+            sample->playerOrigin.x, sample->playerOrigin.y, sample->playerOrigin.z,
+            sample->velocity.x, sample->velocity.y, sample->velocity.z,
+            sample->fov);
+    }
+    return transactionId;
+}
+
 void PortalVisualContinuity::Diagnostics::LogSample(
     std::uint32_t transactionId,
     int ordinal,

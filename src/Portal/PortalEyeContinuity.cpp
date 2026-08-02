@@ -10,6 +10,8 @@ namespace
     constexpr float kMinimumVectorLength = 0.001f;
     constexpr float kEngineCatchUpTolerance = 0.5f;
     constexpr float kExitPlaneTolerance = 0.001f;
+    constexpr float kShadowRawAdvanceEpsilon = 0.001f;
+    constexpr float kMaximumShadowPredictionHorizon = 0.05f;
 
     bool IsFiniteVector(const Vector& value)
     {
@@ -17,6 +19,145 @@ namespace
             && std::isfinite(value.y)
             && std::isfinite(value.z);
     }
+}
+
+void PortalEyeContinuity::ShadowPredictor::Reset()
+{
+    m_rawEyeAnchor = Vector();
+    m_previousBaselineEye = Vector();
+    m_shadowEye = Vector();
+    m_predictionElapsed = 0.0f;
+    m_initialized = false;
+}
+
+PortalEyeContinuity::ShadowPredictionResult
+PortalEyeContinuity::ShadowPredictor::Update(
+    bool enabled,
+    bool continuityActive,
+    bool restart,
+    const Vector& baselineEye,
+    const Vector& rawPhysicalEye,
+    const Vector& velocity,
+    float frameTime,
+    float predictionHorizon,
+    bool advanceFrameClock)
+{
+    ShadowPredictionResult result;
+    result.eyeOrigin = baselineEye;
+    result.baselineEye = baselineEye;
+    result.enabled = enabled;
+    result.active = continuityActive;
+    result.initializedBefore = m_initialized;
+    result.predictionElapsedBefore = m_predictionElapsed;
+    result.shadowEyeBefore = m_shadowEye;
+
+    if (!enabled
+        || !continuityActive
+        || !IsFiniteVector(baselineEye)
+        || !IsFiniteVector(rawPhysicalEye)
+        || !IsFiniteVector(velocity))
+    {
+        Reset();
+        result.initializedAfter = m_initialized;
+        return result;
+    }
+
+    const float safeHorizon = std::isfinite(predictionHorizon)
+        ? std::min(std::max(0.0f, predictionHorizon), kMaximumShadowPredictionHorizon)
+        : 0.0f;
+    result.predictionHorizon = safeHorizon;
+
+    if (!m_initialized || restart)
+    {
+        m_rawEyeAnchor = rawPhysicalEye;
+        m_previousBaselineEye = baselineEye;
+        m_shadowEye = baselineEye;
+        m_predictionElapsed = 0.0f;
+        m_initialized = true;
+        result.restarted = true;
+        result.shadowEyeAfter = m_shadowEye;
+        result.initializedAfter = true;
+        return result;
+    }
+
+    result.baselineDelta = baselineEye - m_previousBaselineEye;
+    result.rawEyeDelta = rawPhysicalEye - m_rawEyeAnchor;
+    if (result.rawEyeDelta.Lenght() > kShadowRawAdvanceEpsilon)
+    {
+        m_rawEyeAnchor = rawPhysicalEye;
+        result.rawAdvanced = true;
+        // A new authoritative sample opens a fresh one-tick prediction
+        // horizon. It must not retract the world-space eye motion that was
+        // already rendered while the 30 Hz entity state was frozen.
+        m_predictionElapsed = 0.0f;
+    }
+
+    if (advanceFrameClock)
+    {
+        const float safeFrameTime = std::isfinite(frameTime)
+            ? std::max(0.0f, frameTime)
+            : 0.0f;
+        const float availablePredictionTime = std::max(
+            0.0f,
+            safeHorizon - m_predictionElapsed);
+        const float appliedFrameTime = std::min(
+            safeFrameTime,
+            availablePredictionTime);
+        result.shadowFrameDelta = velocity * appliedFrameTime;
+        if (result.shadowFrameDelta.Lenght() > kMinimumVectorLength)
+        {
+            m_shadowEye += result.shadowFrameDelta;
+            result.worldSpaceAdvanced = true;
+        }
+        m_predictionElapsed += appliedFrameTime;
+        result.horizonClamped = safeFrameTime > availablePredictionTime;
+    }
+
+    m_previousBaselineEye = baselineEye;
+    result.predictionElapsed = m_predictionElapsed;
+    result.shadowEyeAfter = m_shadowEye;
+    result.predictionOffset = m_shadowEye - baselineEye;
+    if (result.predictionOffset.Lenght() > kMinimumVectorLength)
+    {
+        result.eyeOrigin = m_shadowEye;
+        result.applied = true;
+    }
+    result.initializedAfter = m_initialized;
+    return result;
+}
+
+void PortalEyeContinuity::ShadowDiagnosticLogGate::Reset()
+{
+    m_hasPrevious = false;
+    m_previousInitialized = false;
+    m_previousApplied = false;
+    m_previousHorizonClamped = false;
+}
+
+bool PortalEyeContinuity::ShadowDiagnosticLogGate::ShouldLog(
+    const ShadowPredictionResult& result,
+    bool consumedPendingTeleport,
+    bool releasedOverride,
+    bool runtimeSafetyFallback)
+{
+    const bool lifecycleEdge = !m_hasPrevious
+        || result.initializedAfter != m_previousInitialized
+        || result.applied != m_previousApplied;
+    const bool horizonClampEdge = result.horizonClamped
+        && (!m_hasPrevious || !m_previousHorizonClamped);
+    const bool shouldLog = lifecycleEdge
+        || horizonClampEdge
+        || result.restarted
+        || result.rawAdvanced
+        || consumedPendingTeleport
+        || releasedOverride
+        || runtimeSafetyFallback;
+
+    m_hasPrevious = true;
+    m_previousInitialized = result.initializedAfter;
+    m_previousApplied = result.applied;
+    m_previousHorizonClamped = result.horizonClamped;
+    return shouldLog;
 }
 
 void PortalEyeContinuity::State::Reset()
@@ -141,10 +282,9 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
 
     // L4D2's original CalcPlayerView already contains its prediction smoothing.
     // Carry that view's motion after the commit frame instead of the stepped
-    // physical eye. On the consumed frame, keep the transformed tangential/up
-    // residual but align the camera's portal-normal coordinate immediately with
-    // the engine view. This prevents interpolation from holding the camera in
-    // the exit wall's BSP leaf while preserving a small visual residual.
+    // physical eye. The transformed history remains authoritative on all three
+    // axes while it is on the safe side of the exit plane; the compatibility
+    // guard below only constrains candidates that would remain behind it.
     result.freeMovementDelta = rawPhysicalEye - m_previousRawEye;
     result.engineViewMovementDelta =
         originalViewEye - m_previousOriginalViewEye;
@@ -176,15 +316,44 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
 
     const float candidateExitDepth =
         (m_continuityEye - m_activeExitPlaneOrigin).Dot(m_activeExitPlaneNormal);
-    result.normalCorrection = result.originalExitDepth - candidateExitDepth;
-    m_continuityEye += m_activeExitPlaneNormal * result.normalCorrection;
-    result.planeConstrained = true;
+    result.unconstrainedEye = m_continuityEye;
+    result.unconstrainedExitDepth = candidateExitDepth;
+    result.unconstrainedOriginalResidual =
+        (originalViewEye - m_continuityEye).Lenght();
+
+    // Keep the Portal SDK's transformed eye history intact whenever it is
+    // already on the exit side. L4D2 still needs a compatibility guard for a
+    // candidate that would place the view behind the portal's BSP plane.
+    if (!std::isfinite(candidateExitDepth))
+    {
+        m_continuityEye = originalViewEye;
+        m_overrideOriginalView = false;
+        m_eyePositionIsInterpolating = false;
+        result.safetyFallbackToOriginal = true;
+        result.releasedOverride = true;
+        result.eyeOrigin = originalViewEye;
+        result.outputExitDepth = result.originalExitDepth;
+        result.rawResidual = (rawPhysicalEye - originalViewEye).Lenght();
+        result.originalViewResidual = 0.0f;
+        finishTrace();
+        return result;
+    }
+
+    if (candidateExitDepth < -kExitPlaneTolerance)
+    {
+        result.normalCorrection = result.originalExitDepth - candidateExitDepth;
+        m_continuityEye += m_activeExitPlaneNormal * result.normalCorrection;
+        result.planeConstrained = true;
+    }
 
     if (m_eyePositionIsInterpolating)
     {
         Vector difference = originalViewEye - m_continuityEye;
-        difference -= m_activeExitPlaneNormal
-            * difference.Dot(m_activeExitPlaneNormal);
+        if (result.planeConstrained)
+        {
+            difference -= m_activeExitPlaneNormal
+                * difference.Dot(m_activeExitPlaneNormal);
+        }
         const float length = difference.Lenght();
         float followDistance = std::max(0.0f, frameTime) * kOfficialFollowUnitsPerSecond;
 
@@ -211,6 +380,7 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
 
     result.rawResidual = (rawPhysicalEye - m_continuityEye).Lenght();
     result.originalViewResidual = (originalViewEye - m_continuityEye).Lenght();
+    result.activeExitPlaneNormal = m_activeExitPlaneNormal;
     result.outputExitDepth =
         (m_continuityEye - m_activeExitPlaneOrigin).Dot(m_activeExitPlaneNormal);
 

@@ -48,10 +48,10 @@
     <ClCompile Include="Portal\PortalBspCollisionCarver.cpp" />
     <ClCompile Include="Portal\PortalBspPhase1.cpp" />
     <ClCompile Include="Portal\PortalBspCommands.cpp" />
+    <ClCompile Include="Portal\PortalPlacementFloorSnap.cpp" />
     <ClCompile Include="Portal\PortalCollisionBridge.cpp" />
     <ClCompile Include="Portal\PortalStage1Probe.cpp" />
     <ClCompile Include="Portal\PortalPlayerTeleport.cpp" />
-    <ClCompile Include="Portal\PortalControlledNoclipMovement.cpp" />
     <ClCompile Include="Portal\PortalEyeContinuity.cpp" />
     <ClCompile Include="Portal\PortalRenderCadenceTracker.cpp" />
     <ClCompile Include="Portal\PortalTransition.cpp" />
@@ -166,12 +166,12 @@
     <ClInclude Include="Portal\PortalBspCollisionCarver.h" />
     <ClInclude Include="Portal\PortalBspBrushAccess.h" />
     <ClInclude Include="Portal\PortalBspPhase1.h" />
+    <ClInclude Include="Portal\PortalPlacementFloorSnap.h" />
     <ClInclude Include="Portal\PortalBspTypes.h" />
     <ClInclude Include="Portal\PortalPhysicsMode.h" />
     <ClInclude Include="Portal\PortalCollisionBridge.h" />
     <ClInclude Include="Portal\PortalStage1Probe.h" />
     <ClInclude Include="Portal\PortalPlayerTeleport.h" />
-    <ClInclude Include="Portal\PortalControlledNoclipMovement.h" />
     <ClInclude Include="Portal\PortalEyeContinuity.h" />
     <ClInclude Include="Portal\PortalRenderCadenceTracker.h" />
     <ClInclude Include="Portal\PortalTransition.h" />

@@ -27,7 +27,22 @@ void PortalEyeContinuity::ShadowPredictor::Reset()
     m_previousBaselineEye = Vector();
     m_shadowEye = Vector();
     m_predictionElapsed = 0.0f;
+    m_releaseTailElapsed = 0.0f;
     m_initialized = false;
+    m_releaseTailActive = false;
+    m_releaseTailSawRawAdvance = false;
+}
+
+const char* PortalEyeContinuity::ShadowReleaseTailEndReasonName(
+    ShadowReleaseTailEndReason reason)
+{
+    switch (reason)
+    {
+    case ShadowReleaseTailEndReason::None: return "none";
+    case ShadowReleaseTailEndReason::Converged: return "converged";
+    case ShadowReleaseTailEndReason::HorizonExpired: return "horizon-expired";
+    }
+    return "unknown";
 }
 
 PortalEyeContinuity::ShadowPredictionResult
@@ -40,19 +55,22 @@ PortalEyeContinuity::ShadowPredictor::Update(
     const Vector& velocity,
     float frameTime,
     float predictionHorizon,
-    bool advanceFrameClock)
+    bool advanceFrameClock,
+    bool releaseTailEnabled)
 {
     ShadowPredictionResult result;
     result.eyeOrigin = baselineEye;
     result.baselineEye = baselineEye;
     result.enabled = enabled;
-    result.active = continuityActive;
+    result.continuityActive = continuityActive;
+    result.releaseTailEnabled = releaseTailEnabled;
+    result.releaseTailActiveBefore = m_releaseTailActive;
+    result.releaseTailElapsedBefore = m_releaseTailElapsed;
     result.initializedBefore = m_initialized;
     result.predictionElapsedBefore = m_predictionElapsed;
     result.shadowEyeBefore = m_shadowEye;
 
     if (!enabled
-        || !continuityActive
         || !IsFiniteVector(baselineEye)
         || !IsFiniteVector(rawPhysicalEye)
         || !IsFiniteVector(velocity))
@@ -66,6 +84,113 @@ PortalEyeContinuity::ShadowPredictor::Update(
         ? std::min(std::max(0.0f, predictionHorizon), kMaximumShadowPredictionHorizon)
         : 0.0f;
     result.predictionHorizon = safeHorizon;
+
+    if (!continuityActive)
+    {
+        if (!releaseTailEnabled || !m_initialized || safeHorizon <= 0.0f)
+        {
+            Reset();
+            result.initializedAfter = m_initialized;
+            return result;
+        }
+
+        if (!m_releaseTailActive)
+        {
+            m_releaseTailActive = true;
+            m_releaseTailElapsed = 0.0f;
+            m_releaseTailSawRawAdvance = false;
+            result.releaseTailStarted = true;
+        }
+
+        result.baselineDelta = baselineEye - m_previousBaselineEye;
+        result.rawEyeDelta = rawPhysicalEye - m_rawEyeAnchor;
+        if (result.rawEyeDelta.Lenght() > kShadowRawAdvanceEpsilon)
+        {
+            m_rawEyeAnchor = rawPhysicalEye;
+            m_releaseTailSawRawAdvance = true;
+            result.rawAdvanced = true;
+        }
+
+        result.predictionOffset = m_shadowEye - baselineEye;
+        result.releaseTailResidual = result.predictionOffset.Lenght();
+        result.releaseTailSawRawAdvance = m_releaseTailSawRawAdvance;
+        result.releaseTailElapsed = m_releaseTailElapsed;
+        if (m_releaseTailSawRawAdvance
+            && result.releaseTailResidual <= kEngineCatchUpTolerance)
+        {
+            result.shadowEyeAfter = m_shadowEye;
+            result.releaseTailEnded = true;
+            result.releaseTailEndReason =
+                ShadowReleaseTailEndReason::Converged;
+            Reset();
+            result.initializedAfter = false;
+            return result;
+        }
+
+        if (advanceFrameClock)
+        {
+            const float safeFrameTime = std::isfinite(frameTime)
+                ? std::max(0.0f, frameTime)
+                : 0.0f;
+            const float availableTailTime = std::max(
+                0.0f,
+                safeHorizon - m_releaseTailElapsed);
+            const float appliedFrameTime = std::min(
+                safeFrameTime,
+                availableTailTime);
+            result.shadowFrameDelta = velocity * appliedFrameTime;
+            if (result.shadowFrameDelta.Lenght() > kMinimumVectorLength)
+            {
+                m_shadowEye += result.shadowFrameDelta;
+                result.worldSpaceAdvanced = true;
+            }
+            m_releaseTailElapsed += appliedFrameTime;
+            result.horizonClamped = safeFrameTime > availableTailTime;
+        }
+
+        m_previousBaselineEye = baselineEye;
+        result.shadowEyeAfter = m_shadowEye;
+        result.predictionOffset = m_shadowEye - baselineEye;
+        result.releaseTailResidual = result.predictionOffset.Lenght();
+        result.releaseTailSawRawAdvance = m_releaseTailSawRawAdvance;
+        result.releaseTailElapsed = m_releaseTailElapsed;
+
+        if (m_releaseTailSawRawAdvance
+            && result.releaseTailResidual <= kEngineCatchUpTolerance)
+        {
+            result.releaseTailEnded = true;
+            result.releaseTailEndReason =
+                ShadowReleaseTailEndReason::Converged;
+            Reset();
+            result.initializedAfter = false;
+            return result;
+        }
+
+        if (m_releaseTailElapsed >= safeHorizon)
+        {
+            result.releaseTailEnded = true;
+            result.releaseTailEndReason =
+                ShadowReleaseTailEndReason::HorizonExpired;
+            Reset();
+            result.initializedAfter = false;
+            return result;
+        }
+
+        result.active = true;
+        result.releaseTailActive = true;
+        if (result.predictionOffset.Lenght() > kMinimumVectorLength)
+        {
+            result.eyeOrigin = m_shadowEye;
+            result.applied = true;
+        }
+        result.initializedAfter = m_initialized;
+        return result;
+    }
+
+    m_releaseTailActive = false;
+    m_releaseTailElapsed = 0.0f;
+    m_releaseTailSawRawAdvance = false;
+    result.active = true;
 
     if (!m_initialized || restart)
     {
@@ -132,6 +257,7 @@ void PortalEyeContinuity::ShadowDiagnosticLogGate::Reset()
     m_previousInitialized = false;
     m_previousApplied = false;
     m_previousHorizonClamped = false;
+    m_rawAdvanceLogged = false;
 }
 
 bool PortalEyeContinuity::ShadowDiagnosticLogGate::ShouldLog(
@@ -140,6 +266,10 @@ bool PortalEyeContinuity::ShadowDiagnosticLogGate::ShouldLog(
     bool releasedOverride,
     bool runtimeSafetyFallback)
 {
+    if (result.restarted)
+        m_rawAdvanceLogged = false;
+
+    const bool firstRawAdvance = result.rawAdvanced && !m_rawAdvanceLogged;
     const bool lifecycleEdge = !m_hasPrevious
         || result.initializedAfter != m_previousInitialized
         || result.applied != m_previousApplied;
@@ -148,7 +278,7 @@ bool PortalEyeContinuity::ShadowDiagnosticLogGate::ShouldLog(
     const bool shouldLog = lifecycleEdge
         || horizonClampEdge
         || result.restarted
-        || result.rawAdvanced
+        || firstRawAdvance
         || consumedPendingTeleport
         || releasedOverride
         || runtimeSafetyFallback;
@@ -157,6 +287,10 @@ bool PortalEyeContinuity::ShadowDiagnosticLogGate::ShouldLog(
     m_previousInitialized = result.initializedAfter;
     m_previousApplied = result.applied;
     m_previousHorizonClamped = result.horizonClamped;
+    if (result.rawAdvanced)
+        m_rawAdvanceLogged = true;
+    if (!result.initializedAfter)
+        m_rawAdvanceLogged = false;
     return shouldLog;
 }
 
@@ -168,6 +302,7 @@ void PortalEyeContinuity::State::Reset()
     m_pendingMatrix = matrix3x4_t();
     m_pendingExitPlaneOrigin = Vector();
     m_pendingExitPlaneNormal = Vector();
+    m_pendingHistoryRebaseDelta = Vector();
     m_activeExitPlaneOrigin = Vector();
     m_activeExitPlaneNormal = Vector();
     m_pendingTraversalEpoch = 0;
@@ -176,6 +311,7 @@ void PortalEyeContinuity::State::Reset()
     m_activeCommandNumber = 0;
     m_initialized = false;
     m_hasPendingTeleport = false;
+    m_pendingHistoryRebase = false;
     m_eyePositionIsInterpolating = false;
     m_overrideOriginalView = false;
 }
@@ -185,7 +321,9 @@ bool PortalEyeContinuity::State::PublishTeleport(
     const Vector& exitPlaneOrigin,
     const Vector& exitPlaneNormal,
     std::uint32_t traversalEpoch,
-    int commandNumber)
+    int commandNumber,
+    bool rebaseHistoryBeforeTransform,
+    const Vector& historyRebaseDelta)
 {
     Vector normalizedExitNormal = exitPlaneNormal;
     const float exitNormalLength = normalizedExitNormal.Lenght();
@@ -195,6 +333,7 @@ bool PortalEyeContinuity::State::PublishTeleport(
         || traversalEpoch == m_lastPublishedTraversalEpoch
         || !IsFiniteVector(exitPlaneOrigin)
         || !IsFiniteVector(exitPlaneNormal)
+        || !IsFiniteVector(historyRebaseDelta)
         || exitNormalLength <= kMinimumVectorLength)
     {
         return false;
@@ -204,6 +343,8 @@ bool PortalEyeContinuity::State::PublishTeleport(
     m_pendingMatrix = entryToExit;
     m_pendingExitPlaneOrigin = exitPlaneOrigin;
     m_pendingExitPlaneNormal = normalizedExitNormal;
+    m_pendingHistoryRebase = rebaseHistoryBeforeTransform;
+    m_pendingHistoryRebaseDelta = historyRebaseDelta;
     m_pendingTraversalEpoch = traversalEpoch;
     m_pendingCommandNumber = commandNumber;
     m_lastPublishedTraversalEpoch = traversalEpoch;
@@ -223,10 +364,20 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
     result.continuityEyeBefore = m_continuityEye;
     result.previousRawEyeAfterTransform = m_previousRawEye;
     result.continuityEyeAfterTransform = m_continuityEye;
+    result.previousRawEyeAfterRebase = m_previousRawEye;
+    result.continuityEyeAfterRebase = m_continuityEye;
+    result.previousRawEyeWithoutRebaseTransform = m_previousRawEye;
+    result.continuityEyeWithoutRebaseTransform = m_continuityEye;
+    result.previousRawEyeCandidateAfterTransform = m_previousRawEye;
+    result.continuityEyeCandidateAfterTransform = m_continuityEye;
     result.initializedBefore = m_initialized;
     result.hadPendingTeleport = m_hasPendingTeleport;
     result.interpolatingBefore = m_eyePositionIsInterpolating;
     result.overridingBefore = m_overrideOriginalView;
+    result.activeExitPlaneOrigin = m_activeExitPlaneOrigin;
+    result.activeExitPlaneNormal = m_activeExitPlaneNormal;
+    result.traversalEpoch = m_pendingTraversalEpoch;
+    result.commandNumber = m_activeCommandNumber;
 
     const auto finishTrace = [this, &result]()
     {
@@ -256,6 +407,29 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
 
     if (m_hasPendingTeleport)
     {
+        result.historyRebaseDelta = m_pendingHistoryRebaseDelta;
+        result.historyRebaseCandidate =
+            m_pendingHistoryRebaseDelta.LenghtSqr()
+                > kMinimumVectorLength * kMinimumVectorLength;
+        result.previousRawEyeWithoutRebaseTransform =
+            TransformPoint(m_pendingMatrix, m_previousRawEye);
+        result.continuityEyeWithoutRebaseTransform =
+            TransformPoint(m_pendingMatrix, m_continuityEye);
+        result.previousRawEyeCandidateAfterTransform = TransformPoint(
+            m_pendingMatrix,
+            m_previousRawEye + m_pendingHistoryRebaseDelta);
+        result.continuityEyeCandidateAfterTransform = TransformPoint(
+            m_pendingMatrix,
+            m_continuityEye + m_pendingHistoryRebaseDelta);
+        if (m_pendingHistoryRebase)
+        {
+            m_previousRawEye += m_pendingHistoryRebaseDelta;
+            m_previousOriginalViewEye += m_pendingHistoryRebaseDelta;
+            m_continuityEye += m_pendingHistoryRebaseDelta;
+            result.historyRebaseApplied = true;
+        }
+        result.previousRawEyeAfterRebase = m_previousRawEye;
+        result.continuityEyeAfterRebase = m_continuityEye;
         m_previousRawEye = TransformPoint(m_pendingMatrix, m_previousRawEye);
         m_previousOriginalViewEye =
             TransformPoint(m_pendingMatrix, m_previousOriginalViewEye);
@@ -266,10 +440,17 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
         result.continuityEyeAfterTransform = m_continuityEye;
         m_activeCommandNumber = m_pendingCommandNumber;
         m_hasPendingTeleport = false;
+        m_pendingHistoryRebase = false;
+        m_pendingHistoryRebaseDelta = Vector();
         m_eyePositionIsInterpolating = true;
         m_overrideOriginalView = true;
         result.consumedPendingTeleport = true;
     }
+
+    result.traversalEpoch = m_pendingTraversalEpoch;
+    result.commandNumber = m_activeCommandNumber;
+    result.activeExitPlaneOrigin = m_activeExitPlaneOrigin;
+    result.activeExitPlaneNormal = m_activeExitPlaneNormal;
 
     if (!m_overrideOriginalView)
     {
@@ -293,8 +474,6 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
     m_previousRawEye = rawPhysicalEye;
     m_previousOriginalViewEye = originalViewEye;
 
-    result.traversalEpoch = m_pendingTraversalEpoch;
-    result.commandNumber = m_activeCommandNumber;
     result.originalExitDepth =
         (originalViewEye - m_activeExitPlaneOrigin).Dot(m_activeExitPlaneNormal);
 

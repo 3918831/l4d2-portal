@@ -28,7 +28,9 @@ public:
         const Vector& exitPlaneNormal,
         std::uint32_t traversalEpoch,
         int commandNumber,
-        std::uint32_t transactionId);
+        std::uint32_t transactionId,
+        bool projectedPath,
+        const Vector& projectedHistoryRebaseDelta);
     bool ApplyPortalEyeContinuity(
         C_BasePlayer* player,
         Vector& eyeOrigin,
@@ -177,6 +179,8 @@ private:
     std::uint32_t m_eyeContinuityTransactionId = 0;
     int m_eyeContinuityLastCalcViewFrame = -1;
     int m_eyeContinuityCalcViewCallOrdinal = 0;
+    bool m_eyeContinuityProjectedPath = false;
+    bool m_eyeContinuityHistoryRebaseEnabled = false;
     PortalSide m_lastExitPortal = PortalSide::None;
     float m_nextTeleportTime = 0.0f;
     float m_nextStatusLogTime = 0.0f;

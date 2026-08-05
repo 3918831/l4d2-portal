@@ -6,15 +6,17 @@
 
 namespace
 {
-    PortalExitClearanceMode g_exitClearanceMode = PortalExitClearanceMode::FullHull;
+    PortalExitClearanceMode g_exitClearanceMode = PortalExitClearanceMode::ExactTransform;
     bool g_portalNearClipFixEnabled = true;
-    bool g_exactExitVisualGuardEnabled = true;
+    bool g_exactExitVisualGuardEnabled = false;
     bool g_entryCameraHandoffEnabled = true;
     bool g_portalEyeContinuityEnabled = true;
-    bool g_portalEyeShadowPredictorEnabled = false;
+    bool g_portalEyeShadowPredictorEnabled = true;
+    bool g_portalEyeShadowReleaseTailEnabled = true;
+    bool g_projectedEyeHistoryRebaseEnabled = true;
     bool g_serverPortalCommandAngleFixEnabled = true;
-    bool g_portalTransactionDiagnosticsEnabled = false;
-    bool g_predictionCommitMovementSyncEnabled = false;
+    bool g_portalTransactionDiagnosticsEnabled = true;
+    bool g_groundLiveCommitEnabled = true;
 }
 
 bool PortalTransitionDecision::RequiresControlledNoclip(PortalTransitionPhase phase)
@@ -95,28 +97,6 @@ bool PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
         && commandNumber == committedCommandNumber;
 }
 
-bool PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
-    bool enabled,
-    PortalTransitionPhase phase,
-    int commandNumber,
-    int committedCommandNumber)
-{
-    return enabled
-        && IsCommittedTeleportPredictionSyncPhase(phase)
-        && commandNumber > 0
-        && commandNumber == committedCommandNumber;
-}
-
-bool PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled()
-{
-    return g_predictionCommitMovementSyncEnabled;
-}
-
-void PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(bool enabled)
-{
-    g_predictionCommitMovementSyncEnabled = enabled;
-}
-
 PortalServerRunCommandClassification PortalTransitionDecision::ClassifyServerRunCommand(
     bool hasCommittedTeleport,
     int commandNumber,
@@ -191,12 +171,30 @@ void PortalTransitionDecision::SetPortalTransactionDiagnosticsEnabled(bool enabl
     g_portalTransactionDiagnosticsEnabled = enabled;
 }
 
+bool PortalTransitionDecision::GetGroundLiveCommitEnabled()
+{
+    return g_groundLiveCommitEnabled;
+}
+
+void PortalTransitionDecision::SetGroundLiveCommitEnabled(bool enabled)
+{
+    g_groundLiveCommitEnabled = enabled;
+}
+
+bool PortalTransitionDecision::ShouldUseProjectedPlaneCrossing(
+    bool groundLiveCommitEnabled,
+    bool onGround)
+{
+    return !groundLiveCommitEnabled || !onGround;
+}
+
 bool PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(
     int commandDelta)
 {
-    // Capture the commit command and the first three commands that can expose
-    // prediction reconciliation. This is a read-only diagnostic window.
-    return commandDelta >= 0 && commandDelta <= 3;
+    // The commit command and its first authoritative successor are sufficient
+    // to expose prediction reconciliation. Later commands repeated the same
+    // stabilized state and only inflated the focused traversal log.
+    return commandDelta >= 0 && commandDelta <= 1;
 }
 
 bool PortalTransitionDecision::IsWithinGModWallPortalBounds(
@@ -348,6 +346,26 @@ bool PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled()
 void PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(bool enabled)
 {
     g_portalEyeShadowPredictorEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled()
+{
+    return g_portalEyeShadowReleaseTailEnabled;
+}
+
+void PortalTransitionDecision::SetPortalEyeShadowReleaseTailEnabled(bool enabled)
+{
+    g_portalEyeShadowReleaseTailEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled()
+{
+    return g_projectedEyeHistoryRebaseEnabled;
+}
+
+void PortalTransitionDecision::SetProjectedEyeHistoryRebaseEnabled(bool enabled)
+{
+    g_projectedEyeHistoryRebaseEnabled = enabled;
 }
 
 bool PortalTransitionDecision::ShouldApplyEntryCameraHandoff(

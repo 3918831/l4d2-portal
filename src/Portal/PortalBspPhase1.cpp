@@ -2,6 +2,7 @@
 
 #include "PortalBspData.h"
 #include "PortalPhysicsMode.h"
+#include "PortalPlacementFloorSnap.h"
 #include "PortalTransitionDecision.h"
 #include "../SDK/SDK.h"
 #include "../Util/Logger/Logger.h"
@@ -264,7 +265,7 @@ void PortalBspPhase1::LogStatus(const char* reason)
 {
     const PortalBrushBinding& blue = G::PortalBspCollisionCarver.GetBinding(PortalBrushOwner::Blue);
     const PortalBrushBinding& orange = G::PortalBspCollisionCarver.GetBinding(PortalBrushOwner::Orange);
-    U::LogInfo("[PortalBsp][Phase1Status] reason=%s enabled=%s carvingActive=%s pairResolved=%s queryReady=%s generation=%u modified=%zu clearanceMode=%s nearClipFix=%s exactExitVisualGuard=%s entryCameraHandoff=%s eyeHistory=%s shadowPredictor=%s shadowPredictorScope=render-eye-only shadowPredictorHorizon=one-runtime-tick liveMovementMutation=false serverCommandAngleFix=%s transactionDiagnostics=%s predictionDiagnosticWindow=commit-plus-3 predictionCommitSync=%s predictionCommitSyncScope=exact-command-post-setup remoteView=OfficialExactCameraClipMinus0.5 nearPlaneRenderFix=OfficialStencilProxyOnly depthFogRepair=deferred blue(resolved=%s brush=%d contents=0x%08X generation=%u) orange(resolved=%s brush=%d contents=0x%08X generation=%u) legacyCollisionBypass=false movementMutation=false controlledNoclip=false teleportPredictionSync=%s.\n",
+    U::LogInfo("[PortalBsp][Phase1Status] reason=%s enabled=%s carvingActive=%s pairResolved=%s queryReady=%s generation=%u modified=%zu clearanceMode=%s placementFloorSnap=%s placementFloorSnapHalfHeight=%.3f placementFloorSnapHalfHeightSource=portal-sdk-2013-provisional placementFloorSnapMaxDistance=%.3f nearClipFix=%s exactExitVisualGuard=%s entryCameraHandoff=%s eyeHistory=%s shadowPredictor=%s shadowReleaseTail=%s projectedHistoryRebase=%s projectedHistoryRebaseScope=projected-commit-render-eye-history-only shadowPredictorScope=render-eye-only shadowPredictorHorizon=one-runtime-tick liveMovementMutation=false serverCommandAngleFix=%s transactionDiagnostics=%s predictionDiagnosticWindow=commit-plus-1 groundLiveCommit=%s groundLiveCommitScope=ground-only-observed-crossing remoteView=OfficialExactCameraClipMinus0.5 nearPlaneRenderFix=OfficialStencilProxyOnly depthFogRepair=deferred blue(resolved=%s brush=%d contents=0x%08X generation=%u) orange(resolved=%s brush=%d contents=0x%08X generation=%u) legacyCollisionBypass=false movementMutation=false controlledNoclip=false teleportPredictionSync=%s.\n",
         reason ? reason : "unknown",
         BoolText(G::PortalBspCollisionCarver.IsPhase1Enabled()),
         BoolText(G::PortalBspCollisionCarver.IsCarvingActive()),
@@ -274,14 +275,19 @@ void PortalBspPhase1::LogStatus(const char* reason)
         G::PortalBspCollisionCarver.GetModifiedBrushes().size(),
         PortalTransitionDecision::ExitClearanceModeName(
             PortalTransitionDecision::GetExitClearanceMode()),
+        BoolText(PortalPlacementFloorSnap::GetEnabled()),
+        PortalPlacementFloorSnap::kPortalSdk2013ProvisionalHalfHeight,
+        PortalPlacementFloorSnap::kMaximumSnapDistance,
         BoolText(PortalTransitionDecision::GetPortalNearClipFixEnabled()),
         BoolText(PortalTransitionDecision::GetExactExitVisualGuardEnabled()),
         BoolText(PortalTransitionDecision::GetEntryCameraHandoffEnabled()),
         BoolText(PortalTransitionDecision::GetPortalEyeContinuityEnabled()),
         BoolText(PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled()),
+        BoolText(PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled()),
         BoolText(PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled()),
         BoolText(PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()),
-        BoolText(PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled()),
+        BoolText(PortalTransitionDecision::GetGroundLiveCommitEnabled()),
         BoolText(blue.resolved), blue.brushIndex, static_cast<unsigned int>(blue.originalContents), blue.mapGeneration,
         BoolText(orange.resolved), orange.brushIndex, static_cast<unsigned int>(orange.originalContents), orange.mapGeneration,
         BoolText(PortalPhysicsMode::ShouldSynchronizeCommittedTeleportPrediction()));

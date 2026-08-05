@@ -101,6 +101,8 @@ void CPortalTransitionSimulator::Reset()
     m_hasLastCommittedEntryToExit = false;
     m_serverPortalCommandAngleFixPending = false;
     m_lastCommittedTransactionId = 0;
+    m_lastMovementCommandEndDiagnostic = {};
+    m_hasLastMovementCommandEndDiagnostic = false;
     m_previousAnchor = {};
     m_previousBlueOrigin = Vector();
     m_previousBlueNormal = Vector();
@@ -490,6 +492,82 @@ bool CPortalTransitionSimulator::TryGetCommittedMovementForDiagnostic(
     return true;
 }
 
+bool CPortalTransitionSimulator::TryGetMovementCommandEndDiagnostic(
+    int commandNumber,
+    PortalMovementCommandEndDiagnostic* result) const
+{
+    if (!result
+        || !m_hasLastMovementCommandEndDiagnostic
+        || m_lastMovementCommandEndDiagnostic.transactionId == 0
+        || commandNumber <= 0
+        || commandNumber != m_lastMovementCommandEndDiagnostic.commandNumber)
+    {
+        return false;
+    }
+
+    *result = m_lastMovementCommandEndDiagnostic;
+    return true;
+}
+
+bool CPortalTransitionSimulator::TryGetMovementCommandEndDiagnosticForWindow(
+    int commandNumber,
+    PortalMovementCommandEndDiagnostic* result,
+    int* commandDelta) const
+{
+    if (!result
+        || !m_hasLastMovementCommandEndDiagnostic
+        || m_lastMovementCommandEndDiagnostic.transactionId == 0
+        || commandNumber <= 0)
+    {
+        return false;
+    }
+
+    const int delta =
+        commandNumber - m_lastMovementCommandEndDiagnostic.commandNumber;
+    if (!PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(delta))
+        return false;
+
+    *result = m_lastMovementCommandEndDiagnostic;
+    if (commandDelta)
+        *commandDelta = delta;
+    return true;
+}
+
+bool CPortalTransitionSimulator::RecordClientMovementCommandEndDiagnostic(
+    int commandNumber,
+    const Vector& entryOrigin,
+    const Vector& entryVelocity,
+    const QAngle& entryAngles,
+    PortalMovementCommandEndDiagnostic* result)
+{
+    if (!m_hasLastMovementCommandEndDiagnostic
+        || m_lastMovementCommandEndDiagnostic.transactionId == 0
+        || commandNumber <= 0
+        || commandNumber != m_lastMovementCommandEndDiagnostic.commandNumber)
+    {
+        return false;
+    }
+
+    PortalMovementCommandEndDiagnostic& diagnostic =
+        m_lastMovementCommandEndDiagnostic;
+    diagnostic.hasActualClientCommandEnd = true;
+    diagnostic.actualEntryCommandEndOrigin = entryOrigin;
+    diagnostic.actualEntryCommandEndVelocity = entryVelocity;
+    diagnostic.actualEntryCommandEndAngles = entryAngles;
+    const Vector entryCenter = entryOrigin - diagnostic.originFromCenter;
+    diagnostic.actualExitCommandEndOrigin =
+        PortalTransform::TransformPoint(diagnostic.entryToExit, entryCenter)
+        + diagnostic.originFromCenter;
+    diagnostic.actualExitCommandEndVelocity =
+        PortalTransform::TransformVector(diagnostic.entryToExit, entryVelocity);
+    diagnostic.actualExitCommandEndAngles =
+        PortalTransform::TransformAngles(diagnostic.entryToExit, entryAngles);
+
+    if (result)
+        *result = diagnostic;
+    return true;
+}
+
 bool CPortalTransitionSimulator::ObserveServerRunCommand(
     const CUserCmd* cmd,
     PortalServerRunCommandObservation* result) const
@@ -785,7 +863,7 @@ void CPortalTransitionSimulator::UpdatePhase(C_TerrorPlayer* player, CUserCmd* c
             break;
         }
 
-        if (ShouldPredictPlaneCrossing(*probe))
+        if (ShouldPredictPlaneCrossing(player, *probe))
         {
             TryCommitPredictedPlaneCrossing(player, cmd, *probe, currentTime);
             break;
@@ -799,7 +877,7 @@ void CPortalTransitionSimulator::UpdatePhase(C_TerrorPlayer* player, CUserCmd* c
             SetPhase(PortalTransitionPhase::ApproachingPortal, probe, currentTime, "approach-update");
         break;
     case PortalTransitionPhase::IntersectingPortal:
-        if (ShouldPredictPlaneCrossing(*probe))
+        if (ShouldPredictPlaneCrossing(player, *probe))
         {
             TryCommitPredictedPlaneCrossing(player, cmd, *probe, currentTime);
             break;
@@ -942,6 +1020,13 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
 
     const PortalPlayerAnchor anchor = overrideAnchor ? *overrideAnchor : BuildPlayerAnchor(player);
     const bool wasOnGround = (player->m_fFlags() & FL_ONGROUND) != 0;
+    U::LogInfo("[PortalGroundCommitMode] epoch=%u cmd=%d groundLiveCommitEnabled=%s onGround=%s path=%s source=%s behaviorMutation=teleport-timing-only airbornePathChanged=false.\n",
+        m_context.traversalEpoch,
+        cmd ? cmd->command_number : commandNumberOverride,
+        BoolText(PortalTransitionDecision::GetGroundLiveCommitEnabled()),
+        BoolText(wasOnGround),
+        overrideAnchor ? "projected" : "live",
+        overrideAnchor ? "predicted-command-crossing" : "observed-center-crossing");
     const Vector originFromCenter = anchor.origin - anchor.center;
     const Vector transformedCenter = PortalTransform::TransformPoint(entryToExit, anchor.center);
     const Vector mins = player->GetPlayerMins();
@@ -1185,6 +1270,33 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
         currentComparedCommandEndEstimate - officialComparedCommandEndOrigin;
     const float commitToOfficialDistance = std::sqrt(commitToOfficialDelta.LenghtSqr());
     const float currentToOfficialDistance = std::sqrt(currentToOfficialDelta.LenghtSqr());
+    const Vector projectedHistoryRebaseDelta = projectedPath
+        ? anchor.velocity * projectedLeadTime
+        : Vector();
+    PortalMovementCommandEndDiagnostic commandEndDiagnostic;
+    commandEndDiagnostic.transactionId = continuityTransactionId;
+    commandEndDiagnostic.commandNumber = m_context.teleportCommandNumber;
+    commandEndDiagnostic.entrySide = probe.side;
+    commandEndDiagnostic.exitSide = exitSide;
+    commandEndDiagnostic.projectedPath = projectedPath;
+    commandEndDiagnostic.wasOnGround = wasOnGround;
+    commandEndDiagnostic.crossesInsideCommand = crossesInsideCommand;
+    commandEndDiagnostic.commandInterval = commandInterval;
+    commandEndDiagnostic.projectedLeadTime = projectedLeadTime;
+    commandEndDiagnostic.planeCrossingTime = planeCrossingTime;
+    commandEndDiagnostic.postPortalCommandTime = postPortalCommandTime;
+    commandEndDiagnostic.originFromCenter = originFromCenter;
+    commandEndDiagnostic.observedEntryCenter = observedCenter;
+    commandEndDiagnostic.observedEntryOrigin = observedCenter + originFromCenter;
+    commandEndDiagnostic.linearEntryCommandEndCenter = linearFrameEndCenter;
+    commandEndDiagnostic.linearEntryCommandEndOrigin = linearFrameEndCenter + originFromCenter;
+    commandEndDiagnostic.committedExitOrigin = newOrigin;
+    commandEndDiagnostic.officialExitCommandEndOrigin = officialCrossingCommandEndOrigin;
+    commandEndDiagnostic.entryToExit = entryToExit;
+    commandEndDiagnostic.entryPlaneOrigin = probe.entry->origin;
+    commandEndDiagnostic.entryPlaneNormal = probe.entry->normal;
+    commandEndDiagnostic.exitPlaneOrigin = probe.exit->origin;
+    commandEndDiagnostic.exitPlaneNormal = probe.exit->normal;
 
     U::LogInfo("[PortalMovementCommandTiming] txn=%u entry=%s exit=%s cmd=%d path=%s crossingWindow=%s comparisonKind=%s model=linear-no-collision behaviorMutation=false onGround=%s interval=%.6f observedDepth=%.3f linearFrameEndDepth=%.3f commitDepth=%.3f crossesInsideCommand=%s planeCrossingTime=%.6f postPortalCommandTime=%.6f projectedLeadTime=%.6f observedCenter=(%.3f %.3f %.3f) commitCenter=(%.3f %.3f %.3f) linearFrameEndCenter=(%.3f %.3f %.3f) committedOrigin=(%.3f %.3f %.3f) officialCrossingCommandEndOrigin=(%.3f %.3f %.3f) officialComparedCommandEndOrigin=(%.3f %.3f %.3f) currentComparedCommandEndEstimate=(%.3f %.3f %.3f) commitToOfficialDelta=(%.3f %.3f %.3f) commitToOfficialDistance=%.3f currentToOfficialDelta=(%.3f %.3f %.3f) currentToOfficialDistance=%.3f portalZ=(entry=%.3f exit=%.3f delta=%.3f).\n",
         continuityTransactionId,
@@ -1232,7 +1344,9 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
         probe.exit->normal,
         m_context.traversalEpoch,
         m_context.teleportCommandNumber,
-        continuityTransactionId);
+        continuityTransactionId,
+        projectedPath,
+        projectedHistoryRebaseDelta);
 
     U::LogInfo("[PortalCrossingTransaction] txn=%u entry=%s exit=%s cmd=%d path=%s previousEntryDepth=%.3f currentEntryDepth=%.3f commitEntryDepth=%.3f transformedExitDepth=%.3f finalExitDepth=%.3f hasPrevious=%s swept=%s sweepFraction=%.3f.\n",
         continuityTransactionId,
@@ -1310,6 +1424,10 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
     m_hasLastCommittedEntryToExit = m_hasLastCommittedMovement;
     m_serverPortalCommandAngleFixPending = m_hasLastCommittedEntryToExit;
     m_lastCommittedTransactionId = continuityTransactionId;
+    m_lastMovementCommandEndDiagnostic = commandEndDiagnostic;
+    m_hasLastMovementCommandEndDiagnostic =
+        commandEndDiagnostic.transactionId != 0
+        && commandEndDiagnostic.commandNumber > 0;
     return true;
 }
 
@@ -1419,7 +1537,9 @@ bool CPortalTransitionSimulator::ShouldStayInCurrentPhase(const PortalProbe* pro
     return ShouldTrackNearPortal(*probe);
 }
 
-bool CPortalTransitionSimulator::ShouldPredictPlaneCrossing(const PortalProbe& probe) const
+bool CPortalTransitionSimulator::ShouldPredictPlaneCrossing(
+    C_TerrorPlayer* player,
+    const PortalProbe& probe) const
 {
     if (!m_context.hasSignedDepth
         || !probe.insideAperture
@@ -1437,6 +1557,24 @@ bool CPortalTransitionSimulator::ShouldPredictPlaneCrossing(const PortalProbe& p
     const float predictedDepth = probe.centerDistance + probe.velDot * interval;
     if (predictedDepth > kPredictedCrossingDepth)
         return false;
+
+    const bool onGround = player && (player->m_fFlags() & FL_ONGROUND) != 0;
+    const bool groundLiveCommitEnabled =
+        PortalTransitionDecision::GetGroundLiveCommitEnabled();
+    if (!PortalTransitionDecision::ShouldUseProjectedPlaneCrossing(
+        groundLiveCommitEnabled,
+        onGround))
+    {
+        U::LogInfo("[PortalGroundLiveCommit] epoch=%u cmd=%d enabled=true onGround=true entry=%s action=defer-projected-candidate-to-observed-live depth=%.3f predictedDepth=%.3f velDot=%.3f interval=%.6f physicsMutation=false.\n",
+            m_context.traversalEpoch,
+            m_context.lastCommandNumber,
+            SideName(probe.side),
+            probe.centerDistance,
+            predictedDepth,
+            probe.velDot,
+            interval);
+        return false;
+    }
 
     U::LogInfo("[PortalTeleport] simulator predicted crossing entry=%s depth=%.2f predictedDepth=%.2f velDot=%.2f interval=%.4f.\n",
         SideName(probe.side),

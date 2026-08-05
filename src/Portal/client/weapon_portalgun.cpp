@@ -9,6 +9,7 @@
 #include "../PortalBspCollisionCarver.h"
 #include "../PortalBspData.h"
 #include "../PortalBspPhase1.h"
+#include "../PortalPlacementFloorSnap.h"
 
 // hits solids (not grates) and passes through everything else
 #define MASK_SHOT_PORTAL            (CONTENTS_SOLID|CONTENTS_MOVEABLE|CONTENTS_WINDOW|CONTENTS_MONSTER)
@@ -178,7 +179,65 @@ void CWeaponPortalgun::TraceFirePortal(bool bPortal2, const Vector& vTraceStart,
         U::Math.VectorAngles(tr.plane.normal, qFinalAngles);
 
         // 最终决定传送门创建的位置vFinalPosition加上0.5个法向量偏移，可以保证纹理在墙面的前面，避免Z-fighting问题
-        vFinalPosition = tr.endpos + tr.plane.normal * 0.5f;
+        Vector portalForward;
+        Vector portalUp;
+        U::Math.AngleVectors(qFinalAngles, &portalForward, nullptr, &portalUp);
+
+        const float halfHeight =
+            PortalPlacementFloorSnap::kPortalSdk2013ProvisionalHalfHeight;
+        const float maximumSnapDistance =
+            PortalPlacementFloorSnap::kMaximumSnapDistance;
+        const Vector rawSurfaceOrigin = tr.endpos;
+        const Vector portalBottom = rawSurfaceOrigin - portalUp * halfHeight;
+        const Vector floorProbeOffset = portalForward
+            * PortalPlacementFloorSnap::kFloorProbeSurfaceOffset;
+
+        trace_t floorTrace{};
+        CTraceFilterWorldAndPropsOnly floorFilter;
+        UTIL_TraceLine(
+            portalBottom + floorProbeOffset + portalUp * maximumSnapDistance,
+            portalBottom + floorProbeOffset - portalUp * maximumSnapDistance,
+            MASK_SOLID_BRUSHONLY,
+            &floorFilter,
+            &floorTrace);
+
+        PortalPlacementFloorSnap::Input snapInput;
+        snapInput.surfaceOrigin = rawSurfaceOrigin;
+        snapInput.portalForward = portalForward;
+        snapInput.portalUp = portalUp;
+        snapInput.halfHeight = halfHeight;
+        snapInput.maximumSnapDistance = maximumSnapDistance;
+        snapInput.floorHit = floorTrace.DidHit() && !floorTrace.startsolid;
+        snapInput.floorPoint = floorTrace.endpos;
+        snapInput.floorNormal = floorTrace.plane.normal;
+        const PortalPlacementFloorSnap::Result snapResult =
+            PortalPlacementFloorSnap::Resolve(snapInput);
+        const bool snapEnabled = PortalPlacementFloorSnap::GetEnabled();
+        const bool snapApplied = snapEnabled && snapResult.snapped;
+        const Vector finalSurfaceOrigin =
+            snapApplied ? snapResult.surfaceOrigin : rawSurfaceOrigin;
+
+        U::LogInfo("[PortalPlacementFloorSnap] enabled=%s halfHeight=%.3f halfHeightSource=portal-sdk-2013-provisional maxDistance=%.3f eligible=%s floorHit=%s candidate=%s snapped=%s bottomGapBefore=%.3f bottomGapAfter=%.3f movementMutation=false.\n",
+            snapEnabled ? "true" : "false",
+            halfHeight,
+            maximumSnapDistance,
+            snapResult.eligible ? "true" : "false",
+            snapInput.floorHit ? "true" : "false",
+            snapResult.snapped ? "true" : "false",
+            snapApplied ? "true" : "false",
+            snapResult.bottomGapBefore,
+            snapResult.bottomGapAfter);
+        U::LogInfo("[PortalPlacementFloorSnapGeometry] rawSurface=(%.3f,%.3f,%.3f) snappedSurface=(%.3f,%.3f,%.3f) portalUp=(%.5f,%.5f,%.5f) floorPoint=(%.3f,%.3f,%.3f) floorNormal=(%.5f,%.5f,%.5f) snapDelta=(%.3f,%.3f,%.3f).\n",
+            rawSurfaceOrigin.x, rawSurfaceOrigin.y, rawSurfaceOrigin.z,
+            snapResult.surfaceOrigin.x, snapResult.surfaceOrigin.y, snapResult.surfaceOrigin.z,
+            portalUp.x, portalUp.y, portalUp.z,
+            floorTrace.endpos.x, floorTrace.endpos.y, floorTrace.endpos.z,
+            floorTrace.plane.normal.x, floorTrace.plane.normal.y, floorTrace.plane.normal.z,
+            snapResult.snapDelta.x, snapResult.snapDelta.y, snapResult.snapDelta.z);
+
+        // Preserve the existing render-facing normal offset independently of
+        // the surface-space floor match used by placement and BSP binding.
+        vFinalPosition = finalSurfaceOrigin + tr.plane.normal * 0.5f;
         vNormal = tr.plane.normal;
     }
 
@@ -369,10 +428,12 @@ void CWeaponPortalgun::FirePortal(bool bPortal2, Vector* pVector /*= 0*/, bool b
             && tr.m_pEnt->entindex() == 0;
         if (worldHit)
         {
+            const Vector bindingSurfacePosition =
+                vFinalPosition - tr.plane.normal * 0.5f;
             const bool queryReady = Hooks::EngineTrace::EnsurePortalBspDataReady("portal-placement");
             const bool resolved = G::PortalBspCollisionCarver.BindPortalBrush(
                 owner,
-                ToBspVector(tr.endpos),
+                ToBspVector(bindingSurfacePosition),
                 ToBspVector(tr.plane.normal),
                 MASK_PLAYERSOLID,
                 G::PortalBspData,
@@ -381,7 +442,7 @@ void CWeaponPortalgun::FirePortal(bool bPortal2, Vector* pVector /*= 0*/, bool b
             int oracleContents = 0;
             const bool oracleValid = resolved
                 && Hooks::EngineTrace::TryGetBrushContentsForDiagnostics(binding.brushIndex, oracleContents);
-            U::LogInfo("[PortalBsp][Binding] owner=%s queryReady=%s resolved=%s status=%s pointLeaf=%s brushPoint=%s generation=%u hit=(%.3f,%.3f,%.3f) normal=(%.6f,%.6f,%.6f) sample=(%.3f,%.3f,%.3f) leaf=%d brush=%d contents=0x%08X oracleValid=%s oracleContents=0x%08X contentsMatch=%s offset=%.1f samples=%zu candidates=%zu duplicates=%zu invalidCandidates=%zu destructiveWrites=false.\n",
+            U::LogInfo("[PortalBsp][Binding] owner=%s queryReady=%s resolved=%s status=%s pointLeaf=%s brushPoint=%s generation=%u rawHit=(%.3f,%.3f,%.3f) bindingHit=(%.3f,%.3f,%.3f) normal=(%.6f,%.6f,%.6f) sample=(%.3f,%.3f,%.3f) leaf=%d brush=%d contents=0x%08X oracleValid=%s oracleContents=0x%08X contentsMatch=%s offset=%.1f samples=%zu candidates=%zu duplicates=%zu invalidCandidates=%zu destructiveWrites=false.\n",
                 OwnerName(owner),
                 queryReady ? "true" : "false",
                 resolved ? "true" : "false",
@@ -389,6 +450,7 @@ void CWeaponPortalgun::FirePortal(bool bPortal2, Vector* pVector /*= 0*/, bool b
                 PointLeafStatusName(binding.pointLeafStatus),
                 BrushPointStatusName(binding.lastBrushStatus),
                 binding.mapGeneration,
+                tr.endpos.x, tr.endpos.y, tr.endpos.z,
                 binding.hitPosition.x, binding.hitPosition.y, binding.hitPosition.z,
                 binding.hitNormal.x, binding.hitNormal.y, binding.hitNormal.z,
                 binding.samplePosition.x, binding.samplePosition.y, binding.samplePosition.z,

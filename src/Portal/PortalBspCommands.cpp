@@ -2,6 +2,7 @@
 #include "PortalNearViewRenderPolicy.h"
 #include "PortalRenderFixRenderer.h"
 #include "PortalTransitionDecision.h"
+#include "PortalPlacementFloorSnap.h"
 #include "L4D2_Portal.h"
 
 #include "../SDK/L4D2/Includes/convar.h"
@@ -44,6 +45,26 @@ CON_COMMAND(portal_log_flush, "Flush buffered portal diagnostics and print the l
         U::PortalFileLog::GetBuildId(),
         U::PortalFileLog::GetLoadedModulePath());
     U::PortalFileLog::Flush();
+}
+
+CON_COMMAND(portal_placement_floorsnap, "Toggle provisional Portal SDK near-floor portal-bottom matching: portal_placement_floorsnap <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_placement_floorsnap current=%s halfHeight=%.3f halfHeightSource=portal-sdk-2013-provisional maxDistance=%.3f usage='portal_placement_floorsnap <0|1>'.\n",
+            PortalPlacementFloorSnap::GetEnabled() ? "true" : "false",
+            PortalPlacementFloorSnap::kPortalSdk2013ProvisionalHalfHeight,
+            PortalPlacementFloorSnap::kMaximumSnapDistance);
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalPlacementFloorSnap::SetEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_placement_floorsnap result=true enabled=%s halfHeight=%.3f halfHeightSource=portal-sdk-2013-provisional maxDistance=%.3f scope=portal-placement-only playerMovementMutation=false.\n",
+        enabled ? "true" : "false",
+        PortalPlacementFloorSnap::kPortalSdk2013ProvisionalHalfHeight,
+        PortalPlacementFloorSnap::kMaximumSnapDistance);
+    PortalBspPhase1::LogStatus("console-placement-floorsnap-change");
 }
 
 CON_COMMAND(portal_bsp_clearance, "Select exit clearance: portal_bsp_clearance <full|plane|exact>")
@@ -183,7 +204,7 @@ CON_COMMAND(portal_visual_eyehistory, "Toggle official-style post-Teleport eye-h
     PortalBspPhase1::LogStatus("console-eyehistory-change");
 }
 
-CON_COMMAND(portal_visual_shadowpredictor, "Toggle render-time eye extrapolation experiment: portal_visual_shadowpredictor <0|1>")
+CON_COMMAND(portal_visual_shadowpredictor, "Toggle the validated render-time eye extrapolation baseline: portal_visual_shadowpredictor <0|1>")
 {
     if (args.ArgC() < 2)
     {
@@ -197,6 +218,40 @@ CON_COMMAND(portal_visual_shadowpredictor, "Toggle render-time eye extrapolation
     U::LogInfo("[PortalBsp][Command] command=portal_visual_shadowpredictor result=true shadowPredictor=%s scope=render-eye-only horizon=one-runtime-tick physicsMutation=false.\n",
         enabled ? "true" : "false");
     PortalBspPhase1::LogStatus("console-shadowpredictor-change");
+}
+
+CON_COMMAND(portal_visual_shadowtail, "Toggle one-tick shadow-predictor release handoff: portal_visual_shadowtail <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_shadowtail current=%s usage='portal_visual_shadowtail <0|1>'.\n",
+            PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled() ? "true" : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetPortalEyeShadowReleaseTailEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_shadowtail result=true shadowReleaseTail=%s scope=render-eye-only horizon=one-runtime-tick physicsMutation=false.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-shadowtail-change");
+}
+
+CON_COMMAND(portal_visual_projectedhistoryrebase, "Toggle projected-commit pre-transform eye-history rebase: portal_visual_projectedhistoryrebase <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_projectedhistoryrebase current=%s usage='portal_visual_projectedhistoryrebase <0|1>'.\n",
+            PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled()
+                ? "true"
+                : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetProjectedEyeHistoryRebaseEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_projectedhistoryrebase result=true enabled=%s scope=projected-commit-render-eye-history-only physicsMutation=false.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-projected-history-rebase-change");
 }
 
 CON_COMMAND(portal_server_command_anglefix, "Toggle official-style one-shot server command angle transform: portal_server_command_anglefix <0|1>")
@@ -216,7 +271,7 @@ CON_COMMAND(portal_server_command_anglefix, "Toggle official-style one-shot serv
     PortalBspPhase1::LogStatus("console-server-command-anglefix-change");
 }
 
-CON_COMMAND(portal_visual_transactiondiag, "Toggle commit-through-plus-3 portal prediction diagnostics: portal_visual_transactiondiag <0|1>")
+CON_COMMAND(portal_visual_transactiondiag, "Toggle commit-through-plus-1 portal prediction diagnostics: portal_visual_transactiondiag <0|1>")
 {
     if (args.ArgC() < 2)
     {
@@ -228,27 +283,27 @@ CON_COMMAND(portal_visual_transactiondiag, "Toggle commit-through-plus-3 portal 
 
     const bool enabled = std::atoi(args.Arg(1)) != 0;
     PortalTransitionDecision::SetPortalTransactionDiagnosticsEnabled(enabled);
-    U::LogInfo("[PortalBsp][Command] command=portal_visual_transactiondiag result=true transactionDiagnostics=%s predictionWindow=commit-plus-3 behaviorMutation=false.\n",
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_transactiondiag result=true transactionDiagnostics=%s predictionWindow=commit-plus-1 behaviorMutation=false.\n",
         enabled ? "true" : "false");
     PortalBspPhase1::LogStatus("console-transactiondiag-change");
 }
 
-CON_COMMAND(portal_prediction_commit_sync, "Toggle one-shot committed origin/velocity synchronization at client SetupMove: portal_prediction_commit_sync <0|1>")
+CON_COMMAND(portal_ground_livecommit, "Toggle the validated ground-only observed crossing baseline (0 keeps the projected rollback control): portal_ground_livecommit <0|1>")
 {
     if (args.ArgC() < 2)
     {
-        U::LogInfo("[PortalBsp][Command] command=portal_prediction_commit_sync current=%s usage='portal_prediction_commit_sync <0|1>'.\n",
-            PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled() ? "true" : "false");
-        PortalBspPhase1::LogStatus("console-prediction-commit-sync-query");
+        U::LogInfo("[PortalBsp][Command] command=portal_ground_livecommit current=%s usage='portal_ground_livecommit <0|1>'.\n",
+            PortalTransitionDecision::GetGroundLiveCommitEnabled() ? "true" : "false");
+        PortalBspPhase1::LogStatus("console-ground-live-commit-query");
         return;
     }
 
     const bool enabled = std::atoi(args.Arg(1)) != 0;
-    PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(enabled);
-    U::LogInfo("[PortalBsp][Command] command=portal_prediction_commit_sync result=true predictionCommitSync=%s scope=exact-commit-command setupBoundary=post-original behaviorMutation=%s.\n",
+    PortalTransitionDecision::SetGroundLiveCommitEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_ground_livecommit result=true enabled=%s scope=ground-only commitMode=%s airbornePath=unchanged physicsMutation=teleport-timing-only.\n",
         enabled ? "true" : "false",
-        enabled ? "one-shot" : "false");
-    PortalBspPhase1::LogStatus("console-prediction-commit-sync-change");
+        enabled ? "observed-live-baseline" : "projected-rollback-control");
+    PortalBspPhase1::LogStatus("console-ground-live-commit-change");
 }
 
 CON_COMMAND(portal_visual_mark, "Mark a suspected visual flash and dump the most recent portal transaction: portal_visual_mark [reason]")

@@ -39,8 +39,8 @@ int main()
         "teleport commit details must be file-only");
     Expect(ShouldSuppressConsole("[PortalPredictionObservation] syncApplied=false."),
         "prediction boundary observations must be file-only");
-	Expect(ShouldSuppressConsole("[PortalPredictionCommitSync] movementSyncApplied=true."),
-		"prediction setup synchronization diagnostics must be file-only");
+	Expect(ShouldSuppressConsole("[PortalPredictionAngleSync] angleSyncApplied=true."),
+		"prediction angle synchronization diagnostics must be file-only");
 	Expect(ShouldSuppressConsole("[PortalMovementCommandTiming] txn=1 path=projected."),
 		"movement command timing diagnostics must be file-only");
     Expect(ShouldSuppressConsole("[PortalRenderCadenceFrame] txn=1 frame=100."),
@@ -114,6 +114,8 @@ int main()
         "portal eye-history publication diagnostics must be captured");
     Expect(ShouldCapture("[PortalEyeHistory] txn=1 consumed=true."),
         "portal eye-history update diagnostics must be captured");
+    Expect(ShouldCapture("[PortalProjectedEyeHistoryRebase] txn=1 applied=true."),
+        "projected eye-history rebase diagnostics must be captured");
     Expect(ShouldCapture("[PortalEyeShadowPredictor] txn=1 applied=true."),
         "portal eye shadow-predictor diagnostics must be captured");
     Expect(ShouldCapture("[PortalEyeSafety] txn=1 point=applied."),
@@ -126,10 +128,20 @@ int main()
         "server PlayerRunCommand hook validation must be captured");
     Expect(ShouldCapture("[PortalPredictionFinish] phase=finishmove-post-original."),
         "post-FinishMove prediction observations must be captured");
-	Expect(ShouldCapture("[PortalPredictionCommitSync] movementSyncApplied=true."),
-		"prediction setup synchronization diagnostics must be captured");
+	Expect(ShouldCapture("[PortalPredictionAngleSync] angleSyncApplied=true."),
+		"prediction angle synchronization diagnostics must be captured");
 	Expect(ShouldCapture("[PortalMovementCommandTiming] txn=1 path=projected."),
 		"movement command timing diagnostics must be captured");
+    Expect(ShouldCapture("[PortalOfficialCommandEndCandidate] txn=1 matched=true."),
+        "official command-end candidate diagnostics must be captured");
+    Expect(ShouldCapture("[PortalOfficialActualCommandEnd] txn=1 matched=true."),
+        "actual transformed command-end diagnostics must be captured");
+    Expect(ShouldCapture("[PortalOfficialCommandEndAuthoritative] txn=1 commandDelta=1."),
+        "authoritative next-command comparisons must be captured");
+    Expect(ShouldCapture("[PortalServerCommandMovement] txn=1 cmd=10 matched=true."),
+        "server command movement diagnostics must be captured");
+    Expect(ShouldCapture("[PortalGroundLiveCommit] enabled=true action=defer-projected-candidate-to-observed-live."),
+        "ground live-commit A/B diagnostics must be captured");
     Expect(ShouldCapture("[PortalRenderCadenceSummary] txn=1 frames=20."),
         "render-cadence transaction summaries must be captured");
     Expect(ShouldCapture("[PortalPredictionCommandWindowVelocity] stage=finishmove-post-original."),

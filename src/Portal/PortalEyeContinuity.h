@@ -6,6 +6,16 @@
 
 namespace PortalEyeContinuity
 {
+    enum class ShadowReleaseTailEndReason
+    {
+        None,
+        Converged,
+        HorizonExpired,
+    };
+
+    const char* ShadowReleaseTailEndReasonName(
+        ShadowReleaseTailEndReason reason);
+
     struct ShadowPredictionResult
     {
         Vector eyeOrigin;
@@ -18,6 +28,7 @@ namespace PortalEyeContinuity
         Vector predictionOffset;
         bool enabled = false;
         bool active = false;
+        bool continuityActive = false;
         bool initializedBefore = false;
         bool initializedAfter = false;
         bool restarted = false;
@@ -25,9 +36,20 @@ namespace PortalEyeContinuity
         bool worldSpaceAdvanced = false;
         bool horizonClamped = false;
         bool applied = false;
+        bool releaseTailEnabled = false;
+        bool releaseTailActiveBefore = false;
+        bool releaseTailActive = false;
+        bool releaseTailStarted = false;
+        bool releaseTailEnded = false;
+        bool releaseTailSawRawAdvance = false;
+        ShadowReleaseTailEndReason releaseTailEndReason =
+            ShadowReleaseTailEndReason::None;
         float predictionElapsedBefore = 0.0f;
         float predictionElapsed = 0.0f;
         float predictionHorizon = 0.0f;
+        float releaseTailElapsedBefore = 0.0f;
+        float releaseTailElapsed = 0.0f;
+        float releaseTailResidual = 0.0f;
     };
 
     class ShadowPredictor
@@ -43,14 +65,18 @@ namespace PortalEyeContinuity
             const Vector& velocity,
             float frameTime,
             float predictionHorizon,
-            bool advanceFrameClock);
+            bool advanceFrameClock,
+            bool releaseTailEnabled = false);
 
     private:
         Vector m_rawEyeAnchor;
         Vector m_previousBaselineEye;
         Vector m_shadowEye;
         float m_predictionElapsed = 0.0f;
+        float m_releaseTailElapsed = 0.0f;
         bool m_initialized = false;
+        bool m_releaseTailActive = false;
+        bool m_releaseTailSawRawAdvance = false;
     };
 
     class ShadowDiagnosticLogGate
@@ -68,6 +94,7 @@ namespace PortalEyeContinuity
         bool m_previousInitialized = false;
         bool m_previousApplied = false;
         bool m_previousHorizonClamped = false;
+        bool m_rawAdvanceLogged = false;
     };
 
     struct UpdateResult
@@ -77,11 +104,19 @@ namespace PortalEyeContinuity
         Vector continuityEyeBefore;
         Vector previousRawEyeAfterTransform;
         Vector continuityEyeAfterTransform;
+        Vector previousRawEyeAfterRebase;
+        Vector continuityEyeAfterRebase;
+        Vector previousRawEyeWithoutRebaseTransform;
+        Vector continuityEyeWithoutRebaseTransform;
+        Vector previousRawEyeCandidateAfterTransform;
+        Vector continuityEyeCandidateAfterTransform;
+        Vector historyRebaseDelta;
         Vector freeMovementDelta;
         Vector engineViewMovementDelta;
         Vector unconstrainedEye;
         Vector previousRawEyeAfter;
         Vector continuityEyeAfter;
+        Vector activeExitPlaneOrigin;
         Vector activeExitPlaneNormal;
         bool overrideOriginalView = false;
         bool consumedPendingTeleport = false;
@@ -95,6 +130,8 @@ namespace PortalEyeContinuity
         bool overridingAfter = false;
         bool planeConstrained = false;
         bool safetyFallbackToOriginal = false;
+        bool historyRebaseCandidate = false;
+        bool historyRebaseApplied = false;
         float normalCorrection = 0.0f;
         float unconstrainedExitDepth = 0.0f;
         float unconstrainedOriginalResidual = 0.0f;
@@ -115,7 +152,9 @@ namespace PortalEyeContinuity
             const Vector& exitPlaneOrigin,
             const Vector& exitPlaneNormal,
             std::uint32_t traversalEpoch,
-            int commandNumber);
+            int commandNumber,
+            bool rebaseHistoryBeforeTransform = false,
+            const Vector& historyRebaseDelta = Vector());
         UpdateResult Update(
             bool enabled,
             const Vector& rawPhysicalEye,
@@ -135,6 +174,7 @@ namespace PortalEyeContinuity
         matrix3x4_t m_pendingMatrix;
         Vector m_pendingExitPlaneOrigin;
         Vector m_pendingExitPlaneNormal;
+        Vector m_pendingHistoryRebaseDelta;
         Vector m_activeExitPlaneOrigin;
         Vector m_activeExitPlaneNormal;
         std::uint32_t m_pendingTraversalEpoch = 0;
@@ -143,6 +183,7 @@ namespace PortalEyeContinuity
         int m_activeCommandNumber = 0;
         bool m_initialized = false;
         bool m_hasPendingTeleport = false;
+        bool m_pendingHistoryRebase = false;
         bool m_eyePositionIsInterpolating = false;
         bool m_overrideOriginalView = false;
     };

@@ -100,22 +100,6 @@ namespace Hooks
 			void __fastcall Detour(void* ecx, void* edx);
 		}
 
-		namespace StayOnGround
-		{
-			inline Hook::CFunction Func;
-			using FN = void(__fastcall*)(void*, void*);
-
-			void __fastcall Detour(void* ecx, void* edx);
-		}
-
-		namespace TestPlayerPosition
-		{
-			using FN = unsigned long(__fastcall*)(void*, void*, const Vector&, int, trace_t*);
-			constexpr uint32_t Index = 63u;
-
-			unsigned long __fastcall Detour(void* ecx, void* edx, const Vector& pos, int collisionGroup, trace_t* pm);
-		}
-
 		namespace ClientPlayerMove
 		{
 			using FN = PlayerMove::FN;
@@ -158,14 +142,6 @@ namespace Hooks
 			constexpr uint32_t Index = CategorizePosition::Index;
 
 			void __fastcall Detour(void* ecx, void* edx);
-		}
-
-		namespace ClientTestPlayerPosition
-		{
-			using FN = TestPlayerPosition::FN;
-			constexpr uint32_t Index = TestPlayerPosition::Index;
-
-			unsigned long __fastcall Detour(void* ecx, void* edx, const Vector& pos, int collisionGroup, trace_t* pm);
 		}
 
 		void Init();

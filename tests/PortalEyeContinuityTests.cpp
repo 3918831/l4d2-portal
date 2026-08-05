@@ -76,6 +76,12 @@ int main()
             false,
             false),
         "an authoritative raw-eye advance must remain observable");
+    Expect(!shadowLogGate.ShouldLog(
+            rawAdvanceFrame,
+            false,
+            false,
+            false),
+        "repeated raw-eye advances in one predictor lifecycle must be summarized");
 
     PortalEyeContinuity::ShadowPredictionResult horizonFrame = quietShadowFrame;
     horizonFrame.horizonClamped = true;
@@ -290,6 +296,134 @@ int main()
     ExpectNear(shadowInactive.eyeOrigin.x, 130.0f,
         "inactive eye history must return the engine-owned camera unchanged");
 
+    PortalEyeContinuity::ShadowPredictor releaseTailPredictor;
+    releaseTailPredictor.Update(
+        true,
+        true,
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(220.0f, 0.0f, 0.0f),
+        0.0f,
+        1.0f / 30.0f,
+        true,
+        true);
+    releaseTailPredictor.Update(
+        true,
+        true,
+        false,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(220.0f, 0.0f, 0.0f),
+        1.0f / 30.0f,
+        1.0f / 30.0f,
+        true,
+        true);
+    const PortalEyeContinuity::ShadowPredictionResult releaseTailStarted =
+        releaseTailPredictor.Update(
+            true,
+            false,
+            false,
+            Vector(100.2f, 0.0f, 64.0f),
+            Vector(100.0f, 0.0f, 64.0f),
+            Vector(220.0f, 0.0f, 0.0f),
+            0.005f,
+            1.0f / 30.0f,
+            true,
+            true);
+    Expect(releaseTailStarted.releaseTailStarted,
+        "eye-history release must start the optional one-tick shadow handoff");
+    Expect(releaseTailStarted.releaseTailActive,
+        "the release frame must keep the render-only shadow handoff active");
+    Expect(releaseTailStarted.applied,
+        "the release frame must not snap immediately back to the frozen engine eye");
+    ExpectNear(releaseTailStarted.eyeOrigin.x, 108.433334f,
+        "the release tail must continue from the persistent world-space shadow eye");
+
+    const PortalEyeContinuity::ShadowPredictionResult releaseTailDuplicate =
+        releaseTailPredictor.Update(
+            true,
+            false,
+            false,
+            Vector(100.2f, 0.0f, 64.0f),
+            Vector(100.0f, 0.0f, 64.0f),
+            Vector(220.0f, 0.0f, 0.0f),
+            0.005f,
+            1.0f / 30.0f,
+            false,
+            true);
+    ExpectNear(releaseTailDuplicate.eyeOrigin.x, 108.433334f,
+        "duplicate CalcView calls must reuse the release-tail eye without advancing it");
+
+    const PortalEyeContinuity::ShadowPredictionResult releaseTailConverged =
+        releaseTailPredictor.Update(
+            true,
+            false,
+            false,
+            Vector(108.3f, 0.0f, 64.0f),
+            Vector(108.0f, 0.0f, 64.0f),
+            Vector(220.0f, 0.0f, 0.0f),
+            0.005f,
+            1.0f / 30.0f,
+            true,
+            true);
+    Expect(releaseTailConverged.releaseTailEnded,
+        "the first authoritative raw-eye catch-up must end a converged release tail");
+    Expect(
+        releaseTailConverged.releaseTailEndReason
+            == PortalEyeContinuity::ShadowReleaseTailEndReason::Converged,
+        "the release-tail handoff must distinguish convergence from timeout");
+    Expect(!releaseTailConverged.applied,
+        "a converged handoff must return camera ownership to the engine");
+    ExpectNear(releaseTailConverged.eyeOrigin.x, 108.3f,
+        "a converged handoff must use the authoritative engine eye");
+
+    PortalEyeContinuity::ShadowPredictor releaseTailExpiryPredictor;
+    releaseTailExpiryPredictor.Update(
+        true,
+        true,
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(220.0f, 0.0f, 0.0f),
+        0.0f,
+        1.0f / 30.0f,
+        true,
+        true);
+    releaseTailExpiryPredictor.Update(
+        true,
+        true,
+        false,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(220.0f, 0.0f, 0.0f),
+        0.005f,
+        1.0f / 30.0f,
+        true,
+        true);
+    const PortalEyeContinuity::ShadowPredictionResult releaseTailExpired =
+        releaseTailExpiryPredictor.Update(
+            true,
+            false,
+            false,
+            Vector(100.0f, 0.0f, 64.0f),
+            Vector(100.0f, 0.0f, 64.0f),
+            Vector(220.0f, 0.0f, 0.0f),
+            0.04f,
+            1.0f / 30.0f,
+            true,
+            true);
+    Expect(releaseTailExpired.releaseTailEnded,
+        "a frozen engine eye must not keep the release tail alive indefinitely");
+    Expect(
+        releaseTailExpired.releaseTailEndReason
+            == PortalEyeContinuity::ShadowReleaseTailEndReason::HorizonExpired,
+        "the one-tick safety cap must be explicit in diagnostics");
+    ExpectNear(releaseTailExpired.releaseTailElapsed, 1.0f / 30.0f,
+        "the release tail must never exceed one runtime tick");
+    Expect(!releaseTailExpired.applied,
+        "an expired release tail must return ownership to the engine");
+
     PortalEyeContinuity::State state;
 
     const PortalEyeContinuity::UpdateResult primed = state.Update(
@@ -369,6 +503,10 @@ int main()
     Expect(consumed.overrideOriginalView, "the corrected eye must override the stale engine view");
     Expect(consumed.traversalEpoch == 7u, "the consumed update must retain the traversal epoch");
     Expect(consumed.commandNumber == 42, "the consumed update must retain the teleport command");
+    ExpectNear(consumed.activeExitPlaneOrigin.x, 100.0f,
+        "the consumed update must expose the active exit plane for runtime safety checks");
+    ExpectNear(consumed.activeExitPlaneNormal.x, 1.0f,
+        "the release tail must retain the normalized exit-plane direction");
     ExpectNear(
         consumed.eyeOrigin.x,
         107.225242f,
@@ -464,6 +602,74 @@ int main()
         "the compatibility correction must move a negative candidate to the safe engine depth");
     ExpectNear(negativeCandidate.outputExitDepth, 0.25f,
         "the protected candidate must remain on the safe side of the exit plane");
+
+    PortalEyeContinuity::State projectedRebaseState;
+    projectedRebaseState.Update(
+        true,
+        Vector(-10.0f, 0.0f, 64.0f),
+        Vector(-8.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        projectedRebaseState.PublishTeleport(
+            Translation(100.0f, 0.0f, 0.0f),
+            Vector(100.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            11u,
+            62,
+            true,
+            Vector(8.25f, 0.0f, 0.0f)),
+        "a projected teleport must accept an explicit pre-transform history rebase");
+    const PortalEyeContinuity::UpdateResult projectedRebased =
+        projectedRebaseState.Update(
+            true,
+            Vector(115.0f, 0.0f, 64.0f),
+            Vector(100.25f, 0.0f, 64.0f),
+            0.01f);
+    Expect(projectedRebased.historyRebaseApplied,
+        "the first post-teleport view must report the projected history rebase");
+    ExpectNear(projectedRebased.historyRebaseDelta.x, 8.25f,
+        "the history rebase trace must retain the projected lead delta");
+    ExpectNear(projectedRebased.continuityEyeAfterRebase.x, 0.25f,
+        "the projected lead delta must be applied in entry space before the portal matrix");
+    ExpectNear(projectedRebased.continuityEyeAfterTransform.x, 100.25f,
+        "the rebased history must transform onto the projected exit commit depth");
+    Expect(!projectedRebased.planeConstrained,
+        "a rebased projected history already on the exit side must not need the BSP safety constraint");
+    ExpectNear(projectedRebased.unconstrainedExitDepth, 0.25f,
+        "the rebased projected history must preserve the projected commit exit depth");
+
+    PortalEyeContinuity::State projectedControlState;
+    projectedControlState.Update(
+        true,
+        Vector(-10.0f, 0.0f, 64.0f),
+        Vector(-8.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        projectedControlState.PublishTeleport(
+            Translation(100.0f, 0.0f, 0.0f),
+            Vector(100.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            12u,
+            63,
+            false,
+            Vector(8.25f, 0.0f, 0.0f)),
+        "the A/B control must retain the projected rebase candidate without applying it");
+    const PortalEyeContinuity::UpdateResult projectedControl =
+        projectedControlState.Update(
+            true,
+            Vector(115.0f, 0.0f, 64.0f),
+            Vector(100.25f, 0.0f, 64.0f),
+            0.01f);
+    Expect(projectedControl.historyRebaseCandidate,
+        "the control trace must expose that a projected rebase candidate existed");
+    Expect(!projectedControl.historyRebaseApplied,
+        "the control trace must not mutate the official-style history input");
+    ExpectNear(projectedControl.continuityEyeCandidateAfterTransform.x, 100.25f,
+        "the control trace must expose the hypothetical rebased exit eye");
+    ExpectNear(projectedControl.continuityEyeAfterTransform.x, 92.0f,
+        "the disabled path must preserve the unrevised transformed history");
+    Expect(projectedControl.planeConstrained,
+        "the disabled path must retain the existing BSP compatibility constraint");
 
     std::cout << "PortalEyeContinuity tests passed\n";
     return 0;

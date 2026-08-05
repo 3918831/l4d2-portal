@@ -17,6 +17,7 @@ namespace Hooks::ServerPlayerRunCommand
 
     bool EnsureInstalled(C_TerrorPlayer* clientPlayer);
     bool IsInstalled();
+    CUserCmd* GetActiveCommand();
 
     namespace PlayerRunCommand
     {

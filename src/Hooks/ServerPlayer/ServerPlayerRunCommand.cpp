@@ -25,6 +25,7 @@ namespace
     void* g_lastAttemptedServerPlayer = nullptr;
     bool g_hookInstalled = false;
     std::uint32_t g_localCallSequence = 0;
+    thread_local CUserCmd* g_activeServerCommand = nullptr;
 
     struct ServerFieldCache
     {
@@ -466,16 +467,11 @@ namespace
         }
     }
 
-    bool ShouldLog(
-        const PortalTransitionContext& context,
-        const PortalServerRunCommandObservation& observation)
+    bool ShouldLog(const PortalServerRunCommandObservation& observation)
     {
-        if (context.phase != PortalTransitionPhase::Idle)
-            return true;
-
         return observation.hasCommittedTeleport
-            && observation.commandDelta >= -2
-            && observation.commandDelta <= 8;
+            && observation.commandDelta >= -1
+            && observation.commandDelta <= 1;
     }
 
     bool AnglesEqual(const Vector& first, const Vector& second)
@@ -741,6 +737,11 @@ bool ServerPlayerRunCommand::IsInstalled()
     return g_hookInstalled && g_hookTarget != nullptr;
 }
 
+CUserCmd* ServerPlayerRunCommand::GetActiveCommand()
+{
+    return g_activeServerCommand;
+}
+
 void __fastcall ServerPlayerRunCommand::PlayerRunCommand::Detour(
     void* ecx,
     void* edx,
@@ -759,7 +760,7 @@ void __fastcall ServerPlayerRunCommand::PlayerRunCommand::Detour(
         && command
         && simulator.ObserveServerRunCommand(command, &observation);
     const bool shouldLog =
-        observed && ShouldLog(context, observation);
+        observed && ShouldLog(observation);
     const Vector anglesBefore =
         command ? command->viewangles : Vector();
     const float forwardMoveBefore =
@@ -887,7 +888,10 @@ void __fastcall ServerPlayerRunCommand::PlayerRunCommand::Detour(
             shouldApplyAngleFix ? "true" : "false");
     }
 
+    CUserCmd* previousActiveCommand = g_activeServerCommand;
+    g_activeServerCommand = isLocalServerPlayer ? command : nullptr;
     Func.Original<FN>()(ecx, edx, command, moveHelper);
+    g_activeServerCommand = previousActiveCommand;
 
     if (shouldLog && command)
     {

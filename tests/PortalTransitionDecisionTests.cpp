@@ -24,6 +24,45 @@ namespace
 int main()
 {
     Expect(
+        PortalTransitionDecision::GetExitClearanceMode() == PortalExitClearanceMode::ExactTransform,
+        "the established BSP traversal baseline must default to the exact portal transform");
+    Expect(
+        !PortalTransitionDecision::GetExactExitVisualGuardEnabled(),
+        "the established baseline must keep the disproven exit guard disabled");
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+        "the validated one-tick shadow predictor must be enabled by default");
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
+        "the validated shadow release tail must be enabled by default");
+    Expect(
+        PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled(),
+        "the validated projected eye-history rebase must be enabled by default");
+    Expect(
+        PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled(),
+        "focused transaction diagnostics must default on during continuity testing");
+    Expect(
+        PortalTransitionDecision::GetGroundLiveCommitEnabled(),
+        "the validated ground live-commit path must be enabled by default");
+    Expect(
+        PortalTransitionDecision::ShouldUseProjectedPlaneCrossing(false, true),
+        "the rollback control must retain the projected ground commit");
+    Expect(
+        !PortalTransitionDecision::ShouldUseProjectedPlaneCrossing(true, true),
+        "the baseline must defer a grounded projected candidate to the live crossing");
+    Expect(
+        PortalTransitionDecision::ShouldUseProjectedPlaneCrossing(true, false),
+        "the ground live-commit baseline must not alter the validated airborne crossing path");
+    PortalTransitionDecision::SetGroundLiveCommitEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetGroundLiveCommitEnabled(),
+        "the projected ground control path must remain available as a rollback switch");
+    PortalTransitionDecision::SetGroundLiveCommitEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetGroundLiveCommitEnabled(),
+        "the rollback switch must restore the validated ground live-commit baseline");
+
+    Expect(
         !PortalTransitionDecision::RequiresControlledNoclip(PortalTransitionPhase::Idle),
         "idle movement must use the normal walk solver");
     Expect(
@@ -222,10 +261,10 @@ int main()
     Expect(
         PortalTransitionDecision::GetExitClearanceMode() == PortalExitClearanceMode::PlaneEpsilon,
         "the runtime clearance selection must retain plane-epsilon mode");
-    PortalTransitionDecision::SetExitClearanceMode(PortalExitClearanceMode::FullHull);
+    PortalTransitionDecision::SetExitClearanceMode(PortalExitClearanceMode::ExactTransform);
     Expect(
-        PortalTransitionDecision::GetExitClearanceMode() == PortalExitClearanceMode::FullHull,
-        "the runtime clearance selection must return to the full-hull baseline");
+        PortalTransitionDecision::GetExitClearanceMode() == PortalExitClearanceMode::ExactTransform,
+        "the runtime clearance selection must return to the exact-transform baseline");
 
     Expect(
         PortalTransitionDecision::IsViewNearPortalPlane(24.0f, 12.0f, -20.0f, 48.0f, 38.0f, 62.0f),
@@ -306,30 +345,6 @@ int main()
         !PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
             PortalTransitionPhase::Idle, 1521, 1521),
         "normal movement must not rewrite user command view angles");
-    Expect(
-        PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
-            true, PortalTransitionPhase::ExitingPortal, 1521, 1521),
-        "an enabled commit sync must hand the exact teleport command to movement in exit space");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
-            false, PortalTransitionPhase::ExitingPortal, 1521, 1521),
-        "the control group must leave committed movement untouched");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
-            true, PortalTransitionPhase::Cooldown, 1522, 1521),
-        "committed movement sync must never spill into the following command");
-    Expect(
-        !PortalTransitionDecision::ShouldSyncCommittedMovementAtPredictionSetup(
-            true, PortalTransitionPhase::Idle, 1521, 1521),
-        "normal movement must never receive a committed portal position or velocity");
-    Expect(
-        !PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled(),
-        "prediction commit movement sync must default off for a controlled A/B test");
-    PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(true);
-    Expect(
-        PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled(),
-        "the runtime A/B switch must enable one-shot committed movement sync");
-    PortalTransitionDecision::SetPredictionCommitMovementSyncEnabled(false);
     const auto noCommitCommand =
         PortalTransitionDecision::ClassifyServerRunCommand(
             false, 1521, 0, 0.0f, 0.0f);
@@ -431,28 +446,49 @@ int main()
         PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
         "the eye-history continuity adapter must support an isolated A/B on path");
     Expect(
-        !PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
-        "the non-official shadow predictor must default off for an explicit A/B");
-    PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(true);
-    Expect(
         PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
-        "the shadow predictor must be independently enabled without changing physics");
+        "the validated shadow predictor must retain the continuity baseline");
     PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(false);
     Expect(
         !PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
-        "the shadow predictor control path must remain available");
+        "the shadow predictor must remain independently disableable");
+    PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+        "the shadow predictor control path must restore the continuity baseline");
+
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
+        "the validated ground handoff tail must retain the continuity baseline");
+    PortalTransitionDecision::SetPortalEyeShadowReleaseTailEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
+        "the release tail must remain independently disableable");
+    PortalTransitionDecision::SetPortalEyeShadowReleaseTailEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
+        "the release-tail control path must restore the continuity baseline");
+    Expect(
+        PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled(),
+        "the validated projected eye-history rebase must retain the continuity baseline");
+    PortalTransitionDecision::SetProjectedEyeHistoryRebaseEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled(),
+        "the projected eye-history rebase must remain independently disableable");
+    PortalTransitionDecision::SetProjectedEyeHistoryRebaseEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled(),
+        "the projected eye-history rebase control path must restore the continuity baseline");
     Expect(
         !PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(-1),
         "commands before the commit must stay outside the diagnostic window");
     Expect(
         PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(0)
-            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(1)
-            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(2)
-            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(3),
-        "the diagnostic window must include commit through commit plus three");
+            && PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(1),
+        "the stabilized diagnostic window must retain commit and the first authoritative command");
     Expect(
-        !PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(4),
-        "commands beyond commit plus three must stay outside the diagnostic window");
+        !PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(2),
+        "commands beyond the first authoritative command must stay outside the stabilized window");
     Expect(
         PortalTransitionDecision::IsWithinGModWallPortalBounds(16.5f, 0.0f, 0.0f),
         "GMod wall portal bounds accepts a centered player close to the portal plane");
@@ -486,7 +522,7 @@ int main()
         "a view outside the portal near-plane danger interval preserves the original near plane");
     Expect(
         std::fabs(PortalTransitionDecision::ComputePortalAwareNearClip(true, true, -0.01f, 7.0f, 9.0f, 1.0f) - 7.0f) < 0.001f,
-        "the pre-Teleport near-clip experiment does not alter a view behind the entry plane");
+        "the pre-Teleport near-clip path does not alter a view behind the entry plane");
     Expect(
         std::fabs(PortalTransitionDecision::ComputePortalAwareNearClip(true, true, 0.5f, 0.5f, 9.0f, 1.0f) - 0.5f) < 0.001f,
         "portal-aware near clip never increases an already smaller near plane");
@@ -567,7 +603,7 @@ int main()
         !PortalTransitionDecision::ShouldApplyEntryCameraHandoff(
             false, PortalTransitionPhase::IntersectingPortal,
             true, true, true, true, -1.0f),
-        "the runtime control must disable only the entry camera handoff experiment");
+        "the runtime control must disable only the entry camera handoff path");
     Expect(
         !PortalTransitionDecision::ShouldApplyEntryCameraHandoff(
             true, PortalTransitionPhase::IntersectingPortal,
@@ -600,20 +636,23 @@ int main()
     PortalTransitionDecision::SetPortalNearClipFixEnabled(false);
     Expect(
         !PortalTransitionDecision::GetPortalNearClipFixEnabled(),
-        "portal-aware near clip runtime control can disable the experiment");
+        "portal-aware near clip runtime control can disable the view adjustment");
     PortalTransitionDecision::SetPortalNearClipFixEnabled(true);
     Expect(
         PortalTransitionDecision::GetPortalNearClipFixEnabled(),
         "portal-aware near clip runtime control can restore the default enabled state");
 
-    PortalTransitionDecision::SetExactExitVisualGuardEnabled(false);
     Expect(
         !PortalTransitionDecision::GetExactExitVisualGuardEnabled(),
-        "the exact exit visual guard can be disabled for a runtime A/B comparison");
+        "the disproven exact-exit visual guard must remain off in the baseline");
     PortalTransitionDecision::SetExactExitVisualGuardEnabled(true);
     Expect(
         PortalTransitionDecision::GetExactExitVisualGuardEnabled(),
-        "the exact exit visual guard defaults back to enabled for the next traversal");
+        "the exact exit visual guard control remains available for diagnostics");
+    PortalTransitionDecision::SetExactExitVisualGuardEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetExactExitVisualGuardEnabled(),
+        "the exact exit visual guard must restore the disabled continuity baseline");
 
     PortalTransitionDecision::SetEntryCameraHandoffEnabled(false);
     Expect(

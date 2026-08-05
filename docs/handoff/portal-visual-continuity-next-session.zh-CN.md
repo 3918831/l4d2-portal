@@ -1,5 +1,9 @@
 # 新会话交接：BSP 穿越后的残余视觉连续性
 
+> 历史交接说明：本文记录 2026-07-26 时尚未完成的视觉连续性工作。
+> 该阶段现已完成，当前基线、完整探索和下一步计划请以
+> `docs/portal-bsp-physical-traversal-and-continuity-technical-summary.zh-CN.md` 为准。
+
 日期：2026-07-26
 
 当前分支：`codex/bsp-portal-traversal`

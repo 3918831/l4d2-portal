@@ -66,7 +66,6 @@ namespace
     };
 
     ServerTeleportFieldCache g_serverTeleportFields;
-
     float VectorLength(const Vector& value)
     {
         return std::sqrt(value.LenghtSqr());

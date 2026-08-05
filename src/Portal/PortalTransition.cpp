@@ -297,6 +297,8 @@ void CPortalTransition::Reset()
     m_eyeContinuityTransactionId = 0;
     m_eyeContinuityLastCalcViewFrame = -1;
     m_eyeContinuityCalcViewCallOrdinal = 0;
+    m_eyeContinuityProjectedPath = false;
+    m_eyeContinuityHistoryRebaseEnabled = false;
     m_lastExitPortal = PortalSide::None;
     m_nextTeleportTime = 0.0f;
     m_nextCrossingLogTime = 0.0f;
@@ -314,19 +316,28 @@ bool CPortalTransition::PublishPortalEyeTeleport(
     const Vector& exitPlaneNormal,
     std::uint32_t traversalEpoch,
     int commandNumber,
-    std::uint32_t transactionId)
+    std::uint32_t transactionId,
+    bool projectedPath,
+    const Vector& projectedHistoryRebaseDelta)
 {
     const bool initializedBefore = m_eyeContinuity.IsInitialized();
     const bool pendingBefore = m_eyeContinuity.HasPendingTeleport();
+    const bool projectedHistoryRebaseEnabled = projectedPath
+        && PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled();
     const bool published = m_eyeContinuity.PublishTeleport(
         entryToExit,
         exitPlaneOrigin,
         exitPlaneNormal,
         traversalEpoch,
-        commandNumber);
+        commandNumber,
+        projectedHistoryRebaseEnabled,
+        projectedHistoryRebaseDelta);
     if (published)
     {
         m_eyeContinuityTransactionId = transactionId;
+        m_eyeContinuityProjectedPath = projectedPath;
+        m_eyeContinuityHistoryRebaseEnabled =
+            projectedHistoryRebaseEnabled;
         if (PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
         {
             const PortalRenderCadence::BeginResult cadenceBegin =
@@ -357,7 +368,7 @@ bool CPortalTransition::PublishPortalEyeTeleport(
         }
     }
 
-    U::LogInfo("[PortalEyeHistoryPending] txn=%u epoch=%u cmd=%d enabled=%s initializedBefore=%s pendingBefore=%s published=%s pendingAfter=%s exitPlaneOrigin=(%.3f %.3f %.3f) exitPlaneNormal=(%.4f %.4f %.4f).\n",
+    U::LogInfo("[PortalEyeHistoryPending] txn=%u epoch=%u cmd=%d enabled=%s initializedBefore=%s pendingBefore=%s published=%s pendingAfter=%s path=%s projectedHistoryRebaseEnabled=%s projectedHistoryRebaseDelta=(%.3f %.3f %.3f) projectedHistoryRebaseLength=%.3f exitPlaneOrigin=(%.3f %.3f %.3f) exitPlaneNormal=(%.4f %.4f %.4f).\n",
         transactionId,
         traversalEpoch,
         commandNumber,
@@ -366,6 +377,12 @@ bool CPortalTransition::PublishPortalEyeTeleport(
         BoolText(pendingBefore),
         BoolText(published),
         BoolText(m_eyeContinuity.HasPendingTeleport()),
+        projectedPath ? "projected" : "live",
+        BoolText(projectedHistoryRebaseEnabled),
+        projectedHistoryRebaseDelta.x,
+        projectedHistoryRebaseDelta.y,
+        projectedHistoryRebaseDelta.z,
+        projectedHistoryRebaseDelta.Lenght(),
         exitPlaneOrigin.x, exitPlaneOrigin.y, exitPlaneOrigin.z,
         exitPlaneNormal.x, exitPlaneNormal.y, exitPlaneNormal.z);
     return published;
@@ -409,6 +426,57 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         rawPhysicalEye,
         originalViewEye,
         frameTime);
+    if (result.consumedPendingTeleport)
+    {
+        const Vector candidateEntryHistory =
+            result.continuityEyeBefore + result.historyRebaseDelta;
+        const float withoutRebaseExitDepth =
+            (result.continuityEyeWithoutRebaseTransform
+                - result.activeExitPlaneOrigin).Dot(
+                    result.activeExitPlaneNormal);
+        const float candidateRebaseExitDepth =
+            (result.continuityEyeCandidateAfterTransform
+                - result.activeExitPlaneOrigin).Dot(
+                    result.activeExitPlaneNormal);
+        const float appliedHistoryExitDepth =
+            (result.continuityEyeAfterTransform
+                - result.activeExitPlaneOrigin).Dot(
+                    result.activeExitPlaneNormal);
+        U::LogInfo(
+            "[PortalProjectedEyeHistoryRebase] txn=%u epoch=%u cmd=%d path=%s enabled=%s candidate=%s applied=%s behaviorMutation=render-eye-history-only physicsMutation=false delta=(%.3f %.3f %.3f) deltaLength=%.3f historyBefore=(%.3f %.3f %.3f) historyCandidateEntry=(%.3f %.3f %.3f) transformedWithoutRebase=(%.3f %.3f %.3f) transformedCandidate=(%.3f %.3f %.3f) transformedApplied=(%.3f %.3f %.3f) exitDepth(without=%.3f candidate=%.3f applied=%.3f) planeConstrained=%s normalCorrection=%.3f outputExitDepth=%.3f.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            m_eyeContinuityProjectedPath ? "projected" : "live",
+            BoolText(m_eyeContinuityHistoryRebaseEnabled),
+            BoolText(result.historyRebaseCandidate),
+            BoolText(result.historyRebaseApplied),
+            result.historyRebaseDelta.x,
+            result.historyRebaseDelta.y,
+            result.historyRebaseDelta.z,
+            result.historyRebaseDelta.Lenght(),
+            result.continuityEyeBefore.x,
+            result.continuityEyeBefore.y,
+            result.continuityEyeBefore.z,
+            candidateEntryHistory.x,
+            candidateEntryHistory.y,
+            candidateEntryHistory.z,
+            result.continuityEyeWithoutRebaseTransform.x,
+            result.continuityEyeWithoutRebaseTransform.y,
+            result.continuityEyeWithoutRebaseTransform.z,
+            result.continuityEyeCandidateAfterTransform.x,
+            result.continuityEyeCandidateAfterTransform.y,
+            result.continuityEyeCandidateAfterTransform.z,
+            result.continuityEyeAfterTransform.x,
+            result.continuityEyeAfterTransform.y,
+            result.continuityEyeAfterTransform.z,
+            withoutRebaseExitDepth,
+            candidateRebaseExitDepth,
+            appliedHistoryExitDepth,
+            BoolText(result.planeConstrained),
+            result.normalCorrection,
+            result.outputExitDepth);
+    }
     const float predictionHorizon = I::GlobalVars
         ? I::GlobalVars->interval_per_tick
         : 0.0f;
@@ -422,22 +490,36 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             playerVelocity,
             frameTime,
             predictionHorizon,
-            m_eyeContinuityCalcViewCallOrdinal == 0);
+            m_eyeContinuityCalcViewCallOrdinal == 0,
+            PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled());
     const Vector candidateEye = shadowResult.eyeOrigin;
-    const float candidateExitDepth = result.outputExitDepth
-        + shadowResult.predictionOffset.Dot(result.activeExitPlaneNormal);
+    const bool shadowViewActive = result.overrideOriginalView
+        || shadowResult.releaseTailActive;
+    const bool hasActiveExitPlane =
+        IsFiniteVector(result.activeExitPlaneOrigin)
+        && IsFiniteVector(result.activeExitPlaneNormal)
+        && result.activeExitPlaneNormal.LenghtSqr() > 0.5f;
+    const float candidateExitDepth = hasActiveExitPlane
+        ? (candidateEye - result.activeExitPlaneOrigin).Dot(
+            result.activeExitPlaneNormal)
+        : result.outputExitDepth;
 
     int candidateLeaf = -1;
     int originalLeaf = -1;
     EyeSafetySnapshot candidateSafety;
     bool runtimeSafetyFallback = false;
     const char* runtimeSafetyReason = "none";
-    if (result.overrideOriginalView && I::EngineTrace)
+    if (shadowViewActive && I::EngineTrace)
     {
         candidateSafety = CaptureEyeSafetySnapshot(candidateEye);
         candidateLeaf = candidateSafety.leaf;
         originalLeaf = I::EngineTrace->GetLeafContainingPoint(originalViewEye);
-        if (candidateExitDepth < -0.001f)
+        if (!hasActiveExitPlane)
+        {
+            runtimeSafetyFallback = true;
+            runtimeSafetyReason = "invalid-exit-plane";
+        }
+        else if (candidateExitDepth < -0.001f)
         {
             runtimeSafetyFallback = true;
             runtimeSafetyReason = "negative-exit-depth";
@@ -473,7 +555,7 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         m_eyeShadowPredictor.Reset();
         eyeOrigin = originalViewEye;
     }
-    else if (result.overrideOriginalView)
+    else if (shadowViewActive)
     {
         eyeOrigin = candidateEye;
     }
@@ -664,14 +746,14 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         && shouldLogShadowPredictor)
     {
         U::LogInfo(
-            "[PortalEyeShadowPredictor] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d enabled=%s continuityActive=%s restart=%s initialized=%s->%s rawAdvanced=%s advanceFrameClock=%s worldSpaceAdvanced=%s applied=%s horizonClamped=%s predictionElapsed=%.6f->%.6f predictionHorizon=%.6f baselineEye=(%.3f %.3f %.3f) baselineDelta=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) rawDelta=(%.3f %.3f %.3f) shadowEye=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) shadowFrameDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) predictionOffset=(%.3f %.3f %.3f) candidateEye=(%.3f %.3f %.3f) candidateExitDepth=%.3f runtimeSafetyFallback=%s runtimeSafetyReason=%s physicsMutation=false viewMutation=%s.\n",
+            "[PortalEyeShadowPredictor] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d enabled=%s continuityActive=%s restart=%s initialized=%s->%s rawAdvanced=%s advanceFrameClock=%s worldSpaceAdvanced=%s applied=%s horizonClamped=%s predictionElapsed=%.6f->%.6f predictionHorizon=%.6f releaseTail(enabled=%s active=%s->%s started=%s ended=%s reason=%s rawAdvanceSeen=%s elapsed=%.6f->%.6f residual=%.3f) baselineEye=(%.3f %.3f %.3f) baselineDelta=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) rawDelta=(%.3f %.3f %.3f) shadowEye=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) shadowFrameDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) predictionOffset=(%.3f %.3f %.3f) candidateEye=(%.3f %.3f %.3f) candidateExitDepth=%.3f runtimeSafetyFallback=%s runtimeSafetyReason=%s physicsMutation=false viewMutation=%s.\n",
             m_eyeContinuityTransactionId,
             result.traversalEpoch,
             result.commandNumber,
             frameCount,
             m_eyeContinuityCalcViewCallOrdinal,
             BoolText(shadowResult.enabled),
-            BoolText(shadowResult.active),
+            BoolText(shadowResult.continuityActive),
             BoolText(shadowResult.restarted),
             BoolText(shadowResult.initializedBefore),
             BoolText(shadowResult.initializedAfter),
@@ -683,6 +765,17 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             shadowResult.predictionElapsedBefore,
             shadowResult.predictionElapsed,
             shadowResult.predictionHorizon,
+            BoolText(shadowResult.releaseTailEnabled),
+            BoolText(shadowResult.releaseTailActiveBefore),
+            BoolText(shadowResult.releaseTailActive),
+            BoolText(shadowResult.releaseTailStarted),
+            BoolText(shadowResult.releaseTailEnded),
+            PortalEyeContinuity::ShadowReleaseTailEndReasonName(
+                shadowResult.releaseTailEndReason),
+            BoolText(shadowResult.releaseTailSawRawAdvance),
+            shadowResult.releaseTailElapsedBefore,
+            shadowResult.releaseTailElapsed,
+            shadowResult.releaseTailResidual,
             shadowResult.baselineEye.x,
             shadowResult.baselineEye.y,
             shadowResult.baselineEye.z,
@@ -719,11 +812,15 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             BoolText(shadowResult.applied && !runtimeSafetyFallback));
     }
 
-    if (result.releasedOverride || runtimeSafetyFallback)
+    if (runtimeSafetyFallback
+        || shadowResult.releaseTailEnded
+        || (result.releasedOverride && !shadowResult.releaseTailActive))
     {
         m_eyeContinuityTransactionId = 0;
+        m_eyeContinuityProjectedPath = false;
+        m_eyeContinuityHistoryRebaseEnabled = false;
     }
-    return result.overrideOriginalView && !runtimeSafetyFallback;
+    return shadowViewActive && !runtimeSafetyFallback;
 }
 
 void CPortalTransition::CapturePortalRenderCadenceCalcView(
@@ -1228,7 +1325,7 @@ void CPortalTransition::ApplyPortalNearClipFix(CViewSetup& view)
         return;
 
     // Only the main world view near plane is changed. zNearViewmodel remains
-    // untouched so this experiment cannot alter first-person model projection.
+    // untouched so this view-only adjustment cannot alter first-person model projection.
     view.zNear = appliedNearClip;
 
     const float currentTime = I::EngineClient->OBSOLETE_Time();
@@ -1359,7 +1456,7 @@ void CPortalTransition::LogRenderEnvironmentSnapshot(
             && ShouldLog(
                 currentTime,
                 m_nextEyeResidualBaselineLogTime,
-                0.05f))
+                0.25f))
         {
             const Vector physicalEye = player->EyePosition();
             const Vector residual = view.origin - physicalEye;

@@ -1,14 +1,15 @@
 #include "CCSGameMovement.h"
 #include "../ClientPrediction/ClientPrediction.h"
+#include "../ServerPlayer/ServerPlayerRunCommand.h"
 #include "../../Portal/L4D2_Portal.h"
-#include "../../Portal/PortalControlledNoclipMovement.h"
-#include "../../Portal/PortalPhysicsMode.h"
+#include "../../Portal/PortalPlayerTeleport.h"
 #include "../../Portal/PortalTransitionDecision.h"
 #include "../../Util/Logger/Logger.h"
 #include "../../Util/Logger/PortalFileLog.h"
 #include <intrin.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 using namespace Hooks;
@@ -57,17 +58,18 @@ namespace
 		return absolute >= base ? absolute - base : 0u;
 	}
 
-	void* g_ServerStayOnGroundCandidateA = nullptr;
+	CMoveData* TryGetMoveDataFromGameMovement(void* gameMovement);
 
 	struct PredictionCommitMovementDiagnostics
 	{
 		bool active = false;
-		bool syncEnabled = false;
 		int commandNumber = 0;
 		std::uint32_t transactionId = 0;
 		PortalTransitionSide entrySide = PortalTransitionSide::None;
 		PortalTransitionSide exitSide = PortalTransitionSide::None;
 		C_BasePlayer* player = nullptr;
+		PortalMovementCommandEndDiagnostic commandEnd;
+		bool hasCommandEnd = false;
 		unsigned int traceCount = 0;
 		unsigned int hitCount = 0;
 		unsigned int startSolidCount = 0;
@@ -81,62 +83,6 @@ namespace
 	};
 
 	thread_local PredictionCommitMovementDiagnostics g_predictionCommitMovementDiagnostics;
-
-	bool IsReadableAddressRange(const void* address, size_t size)
-	{
-		if (!address || size == 0)
-			return false;
-
-		const uintptr_t start = reinterpret_cast<uintptr_t>(address);
-		const uintptr_t end = start + size - 1u;
-		MEMORY_BASIC_INFORMATION info = {};
-		if (!VirtualQuery(reinterpret_cast<const void*>(start), &info, sizeof(info)))
-			return false;
-
-		const bool firstReadable = info.State == MEM_COMMIT
-			&& !(info.Protect & PAGE_NOACCESS)
-			&& !(info.Protect & PAGE_GUARD);
-		if (!firstReadable)
-			return false;
-
-		if (end < reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize)
-			return true;
-
-		MEMORY_BASIC_INFORMATION endInfo = {};
-		if (!VirtualQuery(reinterpret_cast<const void*>(end), &endInfo, sizeof(endInfo)))
-			return false;
-
-		return endInfo.State == MEM_COMMIT
-			&& !(endInfo.Protect & PAGE_NOACCESS)
-			&& !(endInfo.Protect & PAGE_GUARD);
-	}
-
-	bool LooksLikeFunctionPrologue(const unsigned char* bytes)
-	{
-		return (bytes[0] == 0x55 && bytes[1] == 0x8B && bytes[2] == 0xEC)
-			|| (bytes[0] == 0x55 && bytes[1] == 0x89 && bytes[2] == 0xE5)
-			|| (bytes[0] == 0x53 && bytes[1] == 0x8B && bytes[2] == 0xDC);
-	}
-
-	void* FindNearbyFunctionPrologue(const void* address, size_t maxBack)
-	{
-		if (!address)
-			return nullptr;
-
-		const uintptr_t start = reinterpret_cast<uintptr_t>(address);
-		for (size_t back = 0; back <= maxBack; ++back)
-		{
-			const uintptr_t probe = start - back;
-			if (!IsReadableAddressRange(reinterpret_cast<const void*>(probe), 8u))
-				continue;
-
-			const unsigned char* bytes = reinterpret_cast<const unsigned char*>(probe);
-			if (LooksLikeFunctionPrologue(bytes))
-				return reinterpret_cast<void*>(probe);
-		}
-
-		return nullptr;
-	}
 
 	CMoveData* TryGetMoveDataFromGameMovement(void* gameMovement)
 	{
@@ -329,20 +275,6 @@ namespace
 			BoolText(move->m_bGameCodeMovedPlayer));
 	}
 
-	const PortalInfo_t* GetPortalInfoForSide(PortalTransitionSide side)
-	{
-		switch (side)
-		{
-		case PortalTransitionSide::Blue:
-			return &G::G_L4D2Portal.g_BluePortal;
-		case PortalTransitionSide::Orange:
-			return &G::G_L4D2Portal.g_OrangePortal;
-		case PortalTransitionSide::None:
-		default:
-			return nullptr;
-		}
-	}
-
 	PortalTraceClass ClassifyPredictionMovementTrace(
 		const Vector& start,
 		const Vector& end)
@@ -397,13 +329,16 @@ namespace
 		const PortalTransitionContext& context =
 			G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
 		g_predictionCommitMovementDiagnostics.active = true;
-		g_predictionCommitMovementDiagnostics.syncEnabled =
-			PortalTransitionDecision::GetPredictionCommitMovementSyncEnabled();
 		g_predictionCommitMovementDiagnostics.commandNumber = command->command_number;
 		g_predictionCommitMovementDiagnostics.transactionId = transactionId;
 		g_predictionCommitMovementDiagnostics.entrySide = context.entrySide;
 		g_predictionCommitMovementDiagnostics.exitSide = context.exitSide;
 		g_predictionCommitMovementDiagnostics.player = player;
+		g_predictionCommitMovementDiagnostics.hasCommandEnd =
+			G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetMovementCommandEndDiagnostic(
+				command->command_number,
+				&g_predictionCommitMovementDiagnostics.commandEnd)
+			&& g_predictionCommitMovementDiagnostics.commandEnd.transactionId == transactionId;
 		return true;
 	}
 
@@ -537,10 +472,9 @@ namespace
 		const float speedAfter = std::sqrt(
 			velocityAfter.x * velocityAfter.x
 			+ velocityAfter.y * velocityAfter.y);
-		U::LogInfo("[PortalPredictionMovementSummary] txn=%u cmd=%d syncEnabled=%s entry=%s exit=%s behaviorMutation=false origin=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) originDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) speed2D=%.3f->%.3f speedDrop=%.3f traces=(total=%u hit=%u startsolid=%u allsolid=%u zero=%u horizontal=%u verticalGround=%u step=%u other=%u minHitFraction=%.6f).\n",
+		U::LogInfo("[PortalPredictionMovementSummary] txn=%u cmd=%d entry=%s exit=%s behaviorMutation=false origin=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) originDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) speed2D=%.3f->%.3f speedDrop=%.3f traces=(total=%u hit=%u startsolid=%u allsolid=%u zero=%u horizontal=%u verticalGround=%u step=%u other=%u minHitFraction=%.6f).\n",
 			diagnostics.transactionId,
 			diagnostics.commandNumber,
-			BoolText(diagnostics.syncEnabled),
 			PortalSideName(diagnostics.entrySide),
 			PortalSideName(diagnostics.exitSide),
 			originBefore.x, originBefore.y, originBefore.z,
@@ -565,312 +499,159 @@ namespace
 			diagnostics.minimumHitFraction);
 	}
 
+	float SignedPlaneDistance(
+		const Vector& point,
+		const Vector& planeOrigin,
+		const Vector& planeNormal)
+	{
+		return (point - planeOrigin).Dot(planeNormal);
+	}
+
+	void LogOfficialCommandEndCandidate(
+		const Vector& processOriginBefore,
+		const Vector& processVelocityBefore,
+		CMoveData* move)
+	{
+		const PredictionCommitMovementDiagnostics& diagnostics =
+			g_predictionCommitMovementDiagnostics;
+		if (!diagnostics.active || !move)
+			return;
+
+		if (!diagnostics.hasCommandEnd)
+		{
+			U::LogInfo("[PortalOfficialCommandEndCandidate] txn=%u cmd=%d entry=%s exit=%s matched=false reason=missing-transaction-snapshot behaviorMutation=false.\n",
+				diagnostics.transactionId,
+				diagnostics.commandNumber,
+				PortalSideName(diagnostics.entrySide),
+				PortalSideName(diagnostics.exitSide));
+			return;
+		}
+
+		const PortalMovementCommandEndDiagnostic& candidate = diagnostics.commandEnd;
+		const Vector processOriginAfter = move->GetAbsOrigin();
+		const Vector processVelocityAfter = move->m_vecVelocity;
+		const Vector processDelta = processOriginAfter - processOriginBefore;
+		const float remainingRatio = candidate.commandInterval > 0.0f
+			&& candidate.postPortalCommandTime >= 0.0f
+			? std::max(0.0f, std::min(
+				candidate.postPortalCommandTime / candidate.commandInterval,
+				1.0f))
+			: 0.0f;
+		const Vector remainingTimeEstimate =
+			processOriginBefore + processDelta * remainingRatio;
+		const Vector processCenterBefore =
+			processOriginBefore - candidate.originFromCenter;
+		const Vector processCenterAfter =
+			processOriginAfter - candidate.originFromCenter;
+		const Vector officialExitCenter =
+			candidate.officialExitCommandEndOrigin - candidate.originFromCenter;
+		const Vector committedToOfficial =
+			candidate.committedExitOrigin - candidate.officialExitCommandEndOrigin;
+		const Vector processBeforeToOfficial =
+			processOriginBefore - candidate.officialExitCommandEndOrigin;
+		const Vector processAfterToOfficial =
+			processOriginAfter - candidate.officialExitCommandEndOrigin;
+		const Vector remainingEstimateToOfficial =
+			remainingTimeEstimate - candidate.officialExitCommandEndOrigin;
+
+		U::LogInfo("[PortalOfficialCommandEndCandidate] txn=%u cmd=%d entry=%s exit=%s matched=true path=%s diagnosticModel=official-handleportalling-command-end behaviorMutation=false onGround=%s crossesInsideCommand=%s interval=%.6f projectedLeadTime=%.6f planeCrossingTime=%.6f postPortalCommandTime=%.6f remainingRatio=%.6f observedEntryOrigin=(%.3f %.3f %.3f) observedEntryCenter=(%.3f %.3f %.3f) linearEntryCommandEndOrigin=(%.3f %.3f %.3f) linearEntryCommandEndCenter=(%.3f %.3f %.3f) entryDepth(observed=%.3f commandEnd=%.3f) committedExitOrigin=(%.3f %.3f %.3f) officialExitCommandEndOrigin=(%.3f %.3f %.3f) processOrigin=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) processDelta=(%.3f %.3f %.3f) exitDepth(committed=%.3f official=%.3f processBefore=%.3f processAfter=%.3f) distanceToOfficial(committed=%.3f processBefore=%.3f processAfter=%.3f remainingEstimate=%.3f) remainingTimeEstimate=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) processStartsAtCommitted=%s.\n",
+			candidate.transactionId,
+			candidate.commandNumber,
+			PortalSideName(candidate.entrySide),
+			PortalSideName(candidate.exitSide),
+			candidate.projectedPath ? "projected" : "live",
+			BoolText(candidate.wasOnGround),
+			BoolText(candidate.crossesInsideCommand),
+			candidate.commandInterval,
+			candidate.projectedLeadTime,
+			candidate.planeCrossingTime,
+			candidate.postPortalCommandTime,
+			remainingRatio,
+			candidate.observedEntryOrigin.x, candidate.observedEntryOrigin.y, candidate.observedEntryOrigin.z,
+			candidate.observedEntryCenter.x, candidate.observedEntryCenter.y, candidate.observedEntryCenter.z,
+			candidate.linearEntryCommandEndOrigin.x, candidate.linearEntryCommandEndOrigin.y, candidate.linearEntryCommandEndOrigin.z,
+			candidate.linearEntryCommandEndCenter.x, candidate.linearEntryCommandEndCenter.y, candidate.linearEntryCommandEndCenter.z,
+			SignedPlaneDistance(candidate.observedEntryCenter, candidate.entryPlaneOrigin, candidate.entryPlaneNormal),
+			SignedPlaneDistance(candidate.linearEntryCommandEndCenter, candidate.entryPlaneOrigin, candidate.entryPlaneNormal),
+			candidate.committedExitOrigin.x, candidate.committedExitOrigin.y, candidate.committedExitOrigin.z,
+			candidate.officialExitCommandEndOrigin.x, candidate.officialExitCommandEndOrigin.y, candidate.officialExitCommandEndOrigin.z,
+			processOriginBefore.x, processOriginBefore.y, processOriginBefore.z,
+			processOriginAfter.x, processOriginAfter.y, processOriginAfter.z,
+			processDelta.x, processDelta.y, processDelta.z,
+			SignedPlaneDistance(candidate.committedExitOrigin - candidate.originFromCenter, candidate.exitPlaneOrigin, candidate.exitPlaneNormal),
+			SignedPlaneDistance(officialExitCenter, candidate.exitPlaneOrigin, candidate.exitPlaneNormal),
+			SignedPlaneDistance(processCenterBefore, candidate.exitPlaneOrigin, candidate.exitPlaneNormal),
+			SignedPlaneDistance(processCenterAfter, candidate.exitPlaneOrigin, candidate.exitPlaneNormal),
+			std::sqrt(committedToOfficial.LenghtSqr()),
+			std::sqrt(processBeforeToOfficial.LenghtSqr()),
+			std::sqrt(processAfterToOfficial.LenghtSqr()),
+			std::sqrt(remainingEstimateToOfficial.LenghtSqr()),
+			remainingTimeEstimate.x, remainingTimeEstimate.y, remainingTimeEstimate.z,
+			processVelocityBefore.x, processVelocityBefore.y, processVelocityBefore.z,
+			processVelocityAfter.x, processVelocityAfter.y, processVelocityAfter.z,
+			BoolText((processOriginBefore - candidate.committedExitOrigin).LenghtSqr() <= 0.0625f));
+	}
+
+	void RecordAndLogOfficialActualCommandEnd(CMoveData* move)
+	{
+		const PredictionCommitMovementDiagnostics& diagnostics =
+			g_predictionCommitMovementDiagnostics;
+		if (!diagnostics.active || !diagnostics.hasCommandEnd || !move)
+			return;
+
+		PortalMovementCommandEndDiagnostic actual;
+		if (!G::G_L4D2Portal.m_PortalTransitionSimulator.RecordClientMovementCommandEndDiagnostic(
+			diagnostics.commandNumber,
+			move->GetAbsOrigin(),
+			move->m_vecVelocity,
+			move->m_vecViewAngles,
+			&actual))
+		{
+			U::LogInfo("[PortalOfficialActualCommandEnd] txn=%u cmd=%d matched=false reason=record-rejected behaviorMutation=false.\n",
+				diagnostics.transactionId,
+				diagnostics.commandNumber);
+			return;
+		}
+
+		const Vector entryLinearDelta =
+			actual.actualEntryCommandEndOrigin - actual.linearEntryCommandEndOrigin;
+		const Vector exitOfficialDelta =
+			actual.actualExitCommandEndOrigin - actual.officialExitCommandEndOrigin;
+		const Vector exitCommittedDelta =
+			actual.actualExitCommandEndOrigin - actual.committedExitOrigin;
+		const Vector exitCenter =
+			actual.actualExitCommandEndOrigin - actual.originFromCenter;
+
+		U::LogInfo("[PortalOfficialActualCommandEnd] txn=%u cmd=%d entry=%s exit=%s matched=true path=%s onGround=%s diagnosticModel=transform-client-processmovement-result behaviorMutation=false actualEntryOrigin=(%.3f %.3f %.3f) linearEntryOrigin=(%.3f %.3f %.3f) entryLinearDelta=(%.3f %.3f %.3f) entryLinearDistance=%.3f actualExitOrigin=(%.3f %.3f %.3f) officialExitOrigin=(%.3f %.3f %.3f) exitOfficialDelta=(%.3f %.3f %.3f) exitOfficialDistance=%.3f committedExitOrigin=(%.3f %.3f %.3f) exitCommittedDelta=(%.3f %.3f %.3f) exitCommittedDistance=%.3f exitDepth=%.3f velocityEntry=(%.3f %.3f %.3f) velocityExit=(%.3f %.3f %.3f) anglesEntry=(%.3f %.3f %.3f) anglesExit=(%.3f %.3f %.3f).\n",
+			actual.transactionId,
+			actual.commandNumber,
+			PortalSideName(actual.entrySide),
+			PortalSideName(actual.exitSide),
+			actual.projectedPath ? "projected" : "live",
+			BoolText(actual.wasOnGround),
+			actual.actualEntryCommandEndOrigin.x, actual.actualEntryCommandEndOrigin.y, actual.actualEntryCommandEndOrigin.z,
+			actual.linearEntryCommandEndOrigin.x, actual.linearEntryCommandEndOrigin.y, actual.linearEntryCommandEndOrigin.z,
+			entryLinearDelta.x, entryLinearDelta.y, entryLinearDelta.z,
+			std::sqrt(entryLinearDelta.LenghtSqr()),
+			actual.actualExitCommandEndOrigin.x, actual.actualExitCommandEndOrigin.y, actual.actualExitCommandEndOrigin.z,
+			actual.officialExitCommandEndOrigin.x, actual.officialExitCommandEndOrigin.y, actual.officialExitCommandEndOrigin.z,
+			exitOfficialDelta.x, exitOfficialDelta.y, exitOfficialDelta.z,
+			std::sqrt(exitOfficialDelta.LenghtSqr()),
+			actual.committedExitOrigin.x, actual.committedExitOrigin.y, actual.committedExitOrigin.z,
+			exitCommittedDelta.x, exitCommittedDelta.y, exitCommittedDelta.z,
+			std::sqrt(exitCommittedDelta.LenghtSqr()),
+			SignedPlaneDistance(exitCenter, actual.exitPlaneOrigin, actual.exitPlaneNormal),
+			actual.actualEntryCommandEndVelocity.x, actual.actualEntryCommandEndVelocity.y, actual.actualEntryCommandEndVelocity.z,
+			actual.actualExitCommandEndVelocity.x, actual.actualExitCommandEndVelocity.y, actual.actualExitCommandEndVelocity.z,
+			actual.actualEntryCommandEndAngles.x, actual.actualEntryCommandEndAngles.y, actual.actualEntryCommandEndAngles.z,
+			actual.actualExitCommandEndAngles.x, actual.actualExitCommandEndAngles.y, actual.actualExitCommandEndAngles.z);
+	}
+
 	void EndPredictionCommitMovementDiagnostics()
 	{
 		g_predictionCommitMovementDiagnostics = {};
 	}
 
-	float ClampFloat(float value, float minValue, float maxValue)
-	{
-		return value < minValue ? minValue : (value > maxValue ? maxValue : value);
-	}
-
-	struct PortalApproachVelocitySample
-	{
-		PortalTransitionSide side = PortalTransitionSide::None;
-		int commandNumber = 0;
-		float inwardNormalVelocity = 0.0f;
-		Vector velocity;
-	};
-
-	PortalApproachVelocitySample g_serverApproachVelocity;
-	PortalApproachVelocitySample g_clientApproachVelocity;
-
-	PortalApproachVelocitySample& ApproachVelocitySampleForDomain(const char* domain)
-	{
-		return domain && std::strcmp(domain, "client") == 0 ? g_clientApproachVelocity : g_serverApproachVelocity;
-	}
-
-	void UpdatePortalApproachVelocitySample(const char* domain, const Vector& velocityAfterOriginal)
-	{
-		const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-		if (context.phase != PortalTransitionPhase::ApproachingPortal
-			|| !context.insideAperture
-			|| !context.movingIntoPortal
-			|| context.entrySide == PortalTransitionSide::None)
-		{
-			return;
-		}
-
-		const PortalInfo_t* entry = GetPortalInfoForSide(context.entrySide);
-		if (!entry || !entry->bIsActive || entry->normal.LenghtSqr() < 0.25f)
-			return;
-
-		const float inwardNormalVelocity = velocityAfterOriginal.Dot(entry->normal);
-		if (inwardNormalVelocity >= -20.0f)
-			return;
-
-		PortalApproachVelocitySample& sample = ApproachVelocitySampleForDomain(domain);
-		sample.side = context.entrySide;
-		sample.commandNumber = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics().frameCommandNumber;
-		sample.inwardNormalVelocity = inwardNormalVelocity;
-		sample.velocity = velocityAfterOriginal;
-	}
-
-	bool TryGetRecentPortalApproachVelocity(const char* domain, PortalTransitionSide side, Vector* velocity)
-	{
-		const PortalApproachVelocitySample& sample = ApproachVelocitySampleForDomain(domain);
-		const int commandNumber = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics().frameCommandNumber;
-		if (sample.side != side
-			|| sample.inwardNormalVelocity >= -20.0f
-			|| commandNumber < sample.commandNumber
-			|| commandNumber - sample.commandNumber > 16)
-		{
-			return false;
-		}
-
-		if (velocity)
-			*velocity = sample.velocity;
-		return true;
-	}
-
-	float SelectPortalTargetNormalVelocity(const char* domain, PortalTransitionSide side, const Vector& fallbackVelocity, const Vector& normal)
-	{
-		float targetNormalVelocity = fallbackVelocity.Dot(normal);
-		Vector sampledVelocity;
-		if (TryGetRecentPortalApproachVelocity(domain, side, &sampledVelocity))
-			targetNormalVelocity = sampledVelocity.Dot(normal);
-
-		if (targetNormalVelocity > -80.0f)
-			targetNormalVelocity = -80.0f;
-		return ClampFloat(targetNormalVelocity, -260.0f, -80.0f);
-	}
-
-	Vector SelectPortalTargetVelocity(const char* domain, PortalTransitionSide side, const Vector& fallbackVelocity, const Vector& normal)
-	{
-		Vector targetVelocity = fallbackVelocity;
-		Vector sampledVelocity;
-		if (TryGetRecentPortalApproachVelocity(domain, side, &sampledVelocity))
-			targetVelocity = sampledVelocity;
-
-		const float targetNormalVelocity = SelectPortalTargetNormalVelocity(domain, side, fallbackVelocity, normal);
-		const float normalVelocity = targetVelocity.Dot(normal);
-		if (normalVelocity > targetNormalVelocity)
-			targetVelocity = targetVelocity + (normal * (targetNormalVelocity - normalVelocity));
-
-		return targetVelocity;
-	}
-
-	bool TryApplyPortalWalkMoveNudge(const char* domain, uint32_t heartbeat, void* gameMovement, const Vector& velocityBeforeOriginal, bool detailed)
-	{
-		if (!PortalPhysicsMode::ShouldMutatePlayerMovement())
-			return false;
-
-		const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-		if (!G::G_L4D2Portal.m_PortalTransitionSimulator.IsInCollisionBridgePhase()
-			|| context.phase != PortalTransitionPhase::IntersectingPortal
-			|| !context.insideAperture
-			|| !context.movingIntoPortal
-			|| context.entrySide == PortalTransitionSide::None)
-		{
-			return false;
-		}
-
-		const PortalCollisionBridgeDiagnostics& diag = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics();
-		const PortalFrameTraceSnapshot& horizontalTrace = diag.frameLastHorizontalTrace;
-		if (!horizontalTrace.hasTrace || !horizontalTrace.accepted)
-			return false;
-
-		const PortalInfo_t* entry = GetPortalInfoForSide(context.entrySide);
-		if (!entry || !entry->bIsActive || entry->normal.LenghtSqr() < 0.25f)
-			return false;
-
-		CMoveData* move = TryGetMoveDataFromGameMovement(gameMovement);
-		if (!move)
-			return false;
-
-		const Vector originBefore = move->GetAbsOrigin();
-		const Vector velocityBefore = move->m_vecVelocity;
-		const float currentDepth = (originBefore - entry->origin).Dot(entry->normal);
-		if (currentDepth < -8.0f || currentDepth > 32.0f)
-			return false;
-
-		const float targetNormalVelocity = SelectPortalTargetNormalVelocity(domain, context.entrySide, velocityBeforeOriginal, entry->normal);
-
-		const float nudgeDistance = ClampFloat(-targetNormalVelocity * (1.0f / 30.0f), 3.0f, 8.0f);
-		const Vector originAfter = originBefore - (entry->normal * nudgeDistance);
-		const Vector velocityAfter = SelectPortalTargetVelocity(domain, context.entrySide, velocityBeforeOriginal, entry->normal);
-
-		move->SetAbsOrigin(originAfter);
-		move->m_vecVelocity = velocityAfter;
-
-		Vector committedOrigin;
-		Vector committedVelocity;
-		const bool predictedTeleport = G::G_L4D2Portal.m_PortalTransitionSimulator.TryCommitMovementCrossing(
-			diag.frameCommandNumber,
-			originAfter,
-			velocityAfter,
-			&committedOrigin,
-			&committedVelocity);
-		if (predictedTeleport)
-		{
-			move->SetAbsOrigin(committedOrigin);
-			move->m_vecVelocity = committedVelocity;
-		}
-
-		{
-			U::LogWarning("[PortalBridge][WalkMoveNudge][%s] heartbeat=%u cmd=%d phase=%s entry=%s ctxDepth=%.2f curDepth=%.2f targetNorm=%.1f nudge=%.2f predictedTeleport=%s traceEnd=(%.1f %.1f %.1f) origin=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) vel=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) normal=(%.2f %.2f %.2f).\n",
-				domain,
-				heartbeat,
-				diag.frameCommandNumber,
-				PortalPhaseName(context.phase),
-				PortalSideName(context.entrySide),
-				context.signedDepth,
-				currentDepth,
-				targetNormalVelocity,
-				nudgeDistance,
-				BoolText(predictedTeleport),
-				horizontalTrace.end.x, horizontalTrace.end.y, horizontalTrace.end.z,
-				originBefore.x, originBefore.y, originBefore.z,
-				originAfter.x, originAfter.y, originAfter.z,
-				velocityBefore.x, velocityBefore.y, velocityBefore.z,
-				velocityAfter.x, velocityAfter.y, velocityAfter.z,
-				entry->normal.x, entry->normal.y, entry->normal.z);
-		}
-
-		return true;
-	}
-
-	bool TrySyncPortalCommittedMovement(const char* domain, uint32_t heartbeat, void* gameMovement)
-	{
-		const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-		if (!PortalTransitionDecision::ShouldApplyLegacyBridgeMovement(context.phase))
-			return false;
-
-		CMoveData* move = TryGetMoveDataFromGameMovement(gameMovement);
-		if (!move)
-			return false;
-
-		const PortalCollisionBridgeDiagnostics& diag = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics();
-		Vector committedOrigin;
-		Vector committedVelocity;
-		QAngle committedAngles;
-		if (!G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetCommittedMovementForCommand(
-			diag.frameCommandNumber,
-			&committedOrigin,
-			&committedVelocity,
-			&committedAngles))
-		{
-			return false;
-		}
-
-		const Vector originBefore = move->GetAbsOrigin();
-		const Vector velocityBefore = move->m_vecVelocity;
-		if ((originBefore - committedOrigin).LenghtSqr() < (48.0f * 48.0f))
-			return false;
-
-		move->SetAbsOrigin(committedOrigin);
-		move->m_vecVelocity = committedVelocity;
-		if (I::EngineClient)
-		{
-			Vector engineAngles(committedAngles.x, committedAngles.y, committedAngles.z);
-			I::EngineClient->SetViewAngles(engineAngles);
-		}
-
-		U::LogWarning("[PortalBridge][CommittedMoveSync][%s] heartbeat=%u cmd=%d origin=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) vel=(%.1f %.1f %.1f)->(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f).\n",
-			domain,
-			heartbeat,
-			diag.frameCommandNumber,
-			originBefore.x, originBefore.y, originBefore.z,
-			committedOrigin.x, committedOrigin.y, committedOrigin.z,
-			velocityBefore.x, velocityBefore.y, velocityBefore.z,
-			committedVelocity.x, committedVelocity.y, committedVelocity.z,
-			committedAngles.x, committedAngles.y, committedAngles.z);
-		return true;
-	}
-
-	bool TryPreservePortalExitVelocity(const char* domain, uint32_t heartbeat, void* gameMovement, const Vector& velocityBeforeOriginal)
-	{
-		const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-		if (!PortalTransitionDecision::ShouldApplyLegacyBridgeMovement(context.phase))
-			return false;
-
-		if (context.phase != PortalTransitionPhase::ExitingPortal || context.exitSide == PortalTransitionSide::None)
-			return false;
-
-		const PortalInfo_t* exit = GetPortalInfoForSide(context.exitSide);
-		if (!exit || !exit->bIsActive || exit->normal.LenghtSqr() < 0.25f)
-			return false;
-
-		CMoveData* move = TryGetMoveDataFromGameMovement(gameMovement);
-		if (!move)
-			return false;
-
-		const float targetNormalVelocity = velocityBeforeOriginal.Dot(exit->normal);
-		if (targetNormalVelocity < 20.0f)
-			return false;
-
-		const Vector velocityBefore = move->m_vecVelocity;
-		Vector velocityAfter = velocityBefore;
-		const float currentNormalVelocity = velocityAfter.Dot(exit->normal);
-		if (currentNormalVelocity >= targetNormalVelocity * 0.75f)
-			return false;
-
-		velocityAfter = velocityAfter + (exit->normal * (targetNormalVelocity - currentNormalVelocity));
-		move->m_vecVelocity = velocityAfter;
-
-		const PortalCollisionBridgeDiagnostics& diag = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics();
-		U::LogWarning("[PortalBridge][ExitVelocityPreserve][%s] heartbeat=%u cmd=%d exit=%s targetNorm=%.1f currentNorm=%.1f vel=(%.1f %.1f %.1f)->(%.1f %.1f %.1f).\n",
-			domain,
-			heartbeat,
-			diag.frameCommandNumber,
-			PortalSideName(context.exitSide),
-			targetNormalVelocity,
-			currentNormalVelocity,
-			velocityBefore.x, velocityBefore.y, velocityBefore.z,
-			velocityAfter.x, velocityAfter.y, velocityAfter.z);
-		return true;
-	}
-
-	void LogPortalWalkMoveFrame(
-        const char* domain,
-        uint32_t heartbeat,
-        void* gameMovement,
-        const Vector& originBefore,
-        const Vector& velocityBefore,
-        const Vector& originAfterOriginal,
-        const Vector& velocityAfterOriginal,
-        bool bridgeApplied)
-    {
-        if (!G::G_L4D2Portal.m_PortalTransitionSimulator.IsInCollisionBridgePhase())
-            return;
-
-        CMoveData* move = TryGetMoveDataFromGameMovement(gameMovement);
-        if (!move)
-            return;
-
-        const PortalCollisionBridgeDiagnostics& diag = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics();
-        const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-        const Vector originAfterBridge = move->GetAbsOrigin();
-        const Vector velocityAfterBridge = move->m_vecVelocity;
-        U::PortalFileLog::WriteFormat(
-            "[PortalWalkMoveFrame] domain=%s heartbeat=%u cmd=%d phase=%s side=%s bridgeApplied=%s originBefore=(%.2f %.2f %.2f) originAfterOriginal=(%.2f %.2f %.2f) originAfterBridge=(%.2f %.2f %.2f) velocityBefore=(%.2f %.2f %.2f) velocityAfterOriginal=(%.2f %.2f %.2f) velocityAfterBridge=(%.2f %.2f %.2f) speedBefore=%.2f speedAfterOriginal=%.2f speedAfterBridge=%.2f\n",
-            domain,
-            heartbeat,
-            diag.frameCommandNumber,
-            PortalPhaseName(context.phase),
-            PortalSideName(G::G_L4D2Portal.m_PortalTransitionSimulator.GetCollisionBridgeSide()),
-            BoolText(bridgeApplied),
-            originBefore.x, originBefore.y, originBefore.z,
-            originAfterOriginal.x, originAfterOriginal.y, originAfterOriginal.z,
-            originAfterBridge.x, originAfterBridge.y, originAfterBridge.z,
-            velocityBefore.x, velocityBefore.y, velocityBefore.z,
-            velocityAfterOriginal.x, velocityAfterOriginal.y, velocityAfterOriginal.z,
-            velocityAfterBridge.x, velocityAfterBridge.y, velocityAfterBridge.z,
-            std::sqrt(velocityBefore.LenghtSqr()),
-            std::sqrt(velocityAfterOriginal.LenghtSqr()),
-            std::sqrt(velocityAfterBridge.LenghtSqr()));
-    }
 void LogCategorizeSnapshot(const char* domain, const char* point, uint32_t heartbeat, void* gameMovement, bool detailed)
 	{
 		if (!detailed && !ShouldLogMovementHeartbeat(heartbeat))
@@ -917,41 +698,6 @@ void LogCategorizeSnapshot(const char* domain, const char* point, uint32_t heart
 			move->m_outStepHeight,
 			BoolText(move->m_bGameCodeMovedPlayer));
 	}
-
-	void LogTestPlayerPositionExit(const char* domain, uint32_t heartbeat, void* gameMovement, const Vector& pos, int collisionGroup, trace_t* pm, unsigned long result, bool detailed)
-	{
-		if (!detailed && !(pm && (pm->startsolid || pm->allsolid)))
-			return;
-
-		const PortalCollisionBridgeDiagnostics& diag = G::G_L4D2Portal.m_PortalCollisionBridge.GetDiagnostics();
-		CMoveData* move = TryGetMoveDataFromGameMovement(gameMovement);
-		const Vector moveOrigin = move ? move->GetAbsOrigin() : Vector{};
-		const Vector moveVelocity = move ? move->m_vecVelocity : Vector{};
-		U::LogWarning("[PortalBridge][PositionProbe][%s][TestPlayerPosition][Exit] heartbeat=%u detailed=%s cmd=%d phase=%s entry=%s bridge=%s gm=%p mv=%p pos=(%.1f %.1f %.1f) collisionGroup=%d result=0x%08X trace=%p end=(%.1f %.1f %.1f) plane=(%.2f %.2f %.2f) frac=%.3f startsolid=%s allsolid=%s contents=0x%X ent=%p moveOrigin=(%.1f %.1f %.1f) moveVel=(%.1f %.1f %.1f).\n",
-			domain,
-			heartbeat,
-			BoolText(detailed),
-			diag.frameCommandNumber,
-			PortalPhaseName(diag.lastPhase),
-			PortalSideName(diag.lastEntrySide),
-			BoolText(G::G_L4D2Portal.m_PortalTransitionSimulator.IsInCollisionBridgePhase()),
-			gameMovement,
-			move,
-			pos.x, pos.y, pos.z,
-			collisionGroup,
-			static_cast<unsigned int>(result),
-			pm,
-			pm ? pm->endpos.x : 0.0f, pm ? pm->endpos.y : 0.0f, pm ? pm->endpos.z : 0.0f,
-			pm ? pm->plane.normal.x : 0.0f, pm ? pm->plane.normal.y : 0.0f, pm ? pm->plane.normal.z : 0.0f,
-			pm ? pm->fraction : 0.0f,
-			BoolText(pm ? pm->startsolid : false),
-			BoolText(pm ? pm->allsolid : false),
-			pm ? pm->contents : 0,
-			pm ? pm->m_pEnt : nullptr,
-			moveOrigin.x, moveOrigin.y, moveOrigin.z,
-			moveVelocity.x, moveVelocity.y, moveVelocity.z);
-	}
-
 
 }
 
@@ -1095,20 +841,79 @@ void __fastcall CCSGameMovement::PlayerMove::Detour(void* ecx, void* edx)
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
+	CUserCmd* activeCommand = ServerPlayerRunCommand::GetActiveCommand();
+	PortalMovementCommandEndDiagnostic commandEnd;
+	const bool commandEndMatched = activeCommand
+		&& G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetMovementCommandEndDiagnostic(
+			activeCommand->command_number,
+			&commandEnd);
+	CMoveData* commandMove = commandEndMatched
+		? TryGetMoveDataFromGameMovement(ecx)
+		: nullptr;
+	const Vector commandOriginBefore = commandMove
+		? commandMove->GetAbsOrigin()
+		: Vector();
+	const Vector commandVelocityBefore = commandMove
+		? commandMove->m_vecVelocity
+		: Vector();
+	const QAngle commandAnglesBefore = commandMove
+		? commandMove->m_vecViewAngles
+		: QAngle();
 	LogMovementStageSnapshot("server", "PlayerMove", "Enter", heartbeat, ecx, log);
 	LogFocusedHookProbe("server", "PlayerMove", "Enter", heartbeat, ecx);
-	const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-	const bool shouldReplaceOriginal = PortalTransitionDecision::ShouldReplaceOriginalPlayerMove(
-		context.phase,
-		PortalPhysicsMode::ShouldMutatePlayerMovement());
-	const bool controlledMoveApplied = shouldReplaceOriginal
-		&& PortalControlledNoclipMovement::TryApply(
-			"server",
-			heartbeat,
-			TryGetMoveDataFromGameMovement(ecx),
-			context);
-	if (!controlledMoveApplied)
-		ServerTable.Original<FN>(Index)(ecx, edx);
+	ServerTable.Original<FN>(Index)(ecx, edx);
+	constexpr bool controlledMoveApplied = false;
+	if (commandEndMatched)
+	{
+		commandMove = TryGetMoveDataFromGameMovement(ecx);
+		if (!commandMove)
+		{
+			U::LogInfo("[PortalServerCommandMovement] txn=%u cmd=%d matched=false reason=move-data-null behaviorMutation=%s.\n",
+				commandEnd.transactionId,
+				activeCommand ? activeCommand->command_number : 0,
+				BoolText(controlledMoveApplied));
+		}
+		else
+		{
+			const Vector commandOriginAfter = commandMove->GetAbsOrigin();
+			const Vector commandVelocityAfter = commandMove->m_vecVelocity;
+			const QAngle commandAnglesAfter = commandMove->m_vecViewAngles;
+			const Vector originDelta = commandOriginAfter - commandOriginBefore;
+			const Vector beforeCommittedDelta =
+				commandOriginBefore - commandEnd.committedExitOrigin;
+			const Vector afterOfficialDelta =
+				commandOriginAfter - commandEnd.officialExitCommandEndOrigin;
+			const Vector beforeCenter =
+				commandOriginBefore - commandEnd.originFromCenter;
+			const Vector afterCenter =
+				commandOriginAfter - commandEnd.originFromCenter;
+			U::LogInfo("[PortalServerCommandMovement] txn=%u cmd=%d matched=true path=%s onGround=%s behaviorMutation=%s commandAngles=(%.3f %.3f %.3f) moveAngles=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) origin=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) originDelta=(%.3f %.3f %.3f) committedExitOrigin=(%.3f %.3f %.3f) beforeCommittedDelta=(%.3f %.3f %.3f) beforeCommittedDistance=%.3f officialExitCommandEndOrigin=(%.3f %.3f %.3f) afterOfficialDelta=(%.3f %.3f %.3f) afterOfficialDistance=%.3f exitDepth=(before=%.3f after=%.3f) velocity=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) speed2D=%.3f->%.3f startsAtCommitted=%s.\n",
+				commandEnd.transactionId,
+				activeCommand->command_number,
+				commandEnd.projectedPath ? "projected" : "live",
+				BoolText(commandEnd.wasOnGround),
+				BoolText(controlledMoveApplied),
+				activeCommand->viewangles.x, activeCommand->viewangles.y, activeCommand->viewangles.z,
+				commandAnglesBefore.x, commandAnglesBefore.y, commandAnglesBefore.z,
+				commandAnglesAfter.x, commandAnglesAfter.y, commandAnglesAfter.z,
+				commandOriginBefore.x, commandOriginBefore.y, commandOriginBefore.z,
+				commandOriginAfter.x, commandOriginAfter.y, commandOriginAfter.z,
+				originDelta.x, originDelta.y, originDelta.z,
+				commandEnd.committedExitOrigin.x, commandEnd.committedExitOrigin.y, commandEnd.committedExitOrigin.z,
+				beforeCommittedDelta.x, beforeCommittedDelta.y, beforeCommittedDelta.z,
+				std::sqrt(beforeCommittedDelta.LenghtSqr()),
+				commandEnd.officialExitCommandEndOrigin.x, commandEnd.officialExitCommandEndOrigin.y, commandEnd.officialExitCommandEndOrigin.z,
+				afterOfficialDelta.x, afterOfficialDelta.y, afterOfficialDelta.z,
+				std::sqrt(afterOfficialDelta.LenghtSqr()),
+				SignedPlaneDistance(beforeCenter, commandEnd.exitPlaneOrigin, commandEnd.exitPlaneNormal),
+				SignedPlaneDistance(afterCenter, commandEnd.exitPlaneOrigin, commandEnd.exitPlaneNormal),
+				commandVelocityBefore.x, commandVelocityBefore.y, commandVelocityBefore.z,
+				commandVelocityAfter.x, commandVelocityAfter.y, commandVelocityAfter.z,
+				std::sqrt(commandVelocityBefore.x * commandVelocityBefore.x + commandVelocityBefore.y * commandVelocityBefore.y),
+				std::sqrt(commandVelocityAfter.x * commandVelocityAfter.x + commandVelocityAfter.y * commandVelocityAfter.y),
+				BoolText(beforeCommittedDelta.LenghtSqr() <= 0.0625f));
+		}
+	}
 	LogFocusedHookProbe("server", "PlayerMove", "Exit", heartbeat, ecx);
 	LogMovementStageSnapshot("server", "PlayerMove", "Exit", heartbeat, ecx, log);
 }
@@ -1119,19 +924,7 @@ void __fastcall CCSGameMovement::WalkMove::Detour(void* ecx, void* edx)
 	++heartbeat;
 	LogMovementStageSnapshot("server", "WalkMove", "Enter", heartbeat, ecx, log);
 	LogFocusedHookProbe("server", "WalkMove", "Enter", heartbeat, ecx);
-    CMoveData* move = TryGetMoveDataFromGameMovement(ecx);
-    const Vector originBefore = move ? move->GetAbsOrigin() : Vector();
-    const Vector velocityBefore = move ? move->m_vecVelocity : Vector();
-    ServerTable.Original<FN>(Index)(ecx, edx);
-    const Vector originAfterOriginal = move ? move->GetAbsOrigin() : Vector();
-    const Vector velocityAfterOriginal = move ? move->m_vecVelocity : Vector();
-    UpdatePortalApproachVelocitySample("server", velocityAfterOriginal);
-    bool bridgeApplied = TrySyncPortalCommittedMovement("server", heartbeat, ecx);
-    if (!bridgeApplied)
-        bridgeApplied = TryApplyPortalWalkMoveNudge("server", heartbeat, ecx, velocityBefore, log);
-    if (!bridgeApplied)
-        bridgeApplied = TryPreservePortalExitVelocity("server", heartbeat, ecx, velocityBefore);
-    LogPortalWalkMoveFrame("server", heartbeat, ecx, originBefore, velocityBefore, originAfterOriginal, velocityAfterOriginal, bridgeApplied);
+	ServerTable.Original<FN>(Index)(ecx, edx);
 	LogFocusedHookProbe("server", "WalkMove", "Exit", heartbeat, ecx);
     LogMovementStageSnapshot("server", "WalkMove", "Exit", heartbeat, ecx, log);
 }
@@ -1164,54 +957,6 @@ void __fastcall CCSGameMovement::CategorizePosition::Detour(void* ecx, void* edx
 	LogCategorizeSnapshot("server-signature", "Exit", heartbeat, ecx, log);
 }
 
-void __fastcall CCSGameMovement::StayOnGround::Detour(void* ecx, void* edx)
-{
-	const bool log = ShouldLogServerMovement();
-	static uint32_t heartbeat = 0u;
-	++heartbeat;
-	LogMovementStageSnapshot("server-signature", "StayOnGround", "Enter", heartbeat, ecx, log);
-
-	const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-	const bool skipForPortalBridge = PortalPhysicsMode::ShouldMutatePlayerMovement()
-		&& G::G_L4D2Portal.m_PortalTransitionSimulator.IsInCollisionBridgePhase()
-		&& context.insideAperture
-		&& context.entrySide != PortalTransitionSide::None;
-
-	if (skipForPortalBridge)
-	{
-		static uint32_t skippedLogCount = 0u;
-		++skippedLogCount;
-		if (skippedLogCount <= 3u || (skippedLogCount % 120u) == 0u)
-		{
-			U::LogInfo("[PortalBridge][StayOnGround] skipped during portal bridge count=%u heartbeat=%u phase=%s entry=%s ctxDepth=%.2f moving=%s.\n",
-				skippedLogCount,
-				heartbeat,
-				PortalPhaseName(context.phase),
-				PortalSideName(context.entrySide),
-				context.signedDepth,
-				BoolText(context.movingIntoPortal));
-		}
-		return;
-	}
-
-	const FN original = Func.Original<FN>();
-	if (original)
-		original(ecx, edx);
-	else
-		U::LogError("[PortalBridge][PositionProbe][server-signature][StayOnGround] original function is null.\n");
-
-	LogMovementStageSnapshot("server-signature", "StayOnGround", "Exit", heartbeat, ecx, log);
-}
-unsigned long __fastcall CCSGameMovement::TestPlayerPosition::Detour(void* ecx, void* edx, const Vector& pos, int collisionGroup, trace_t* pm)
-{
-	const bool log = ShouldLogServerMovement();
-	static uint32_t heartbeat = 0u;
-	++heartbeat;
-	const unsigned long result = ServerTable.Original<FN>(Index)(ecx, edx, pos, collisionGroup, pm);
-	LogTestPlayerPositionExit("server", heartbeat, ecx, pos, collisionGroup, pm, result, log);
-	return result;
-}
-
 void __fastcall CCSGameMovement::ClientPlayerMove::Detour(void* ecx, void* edx)
 {
 	const bool log = ShouldLogServerMovement();
@@ -1219,18 +964,7 @@ void __fastcall CCSGameMovement::ClientPlayerMove::Detour(void* ecx, void* edx)
 	++heartbeat;
 	LogMovementStageSnapshot("client", "PlayerMove", "Enter", heartbeat, ecx, log);
 	LogFocusedHookProbe("client", "PlayerMove", "Enter", heartbeat, ecx);
-	const PortalTransitionContext& context = G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
-	const bool shouldReplaceOriginal = PortalTransitionDecision::ShouldReplaceOriginalPlayerMove(
-		context.phase,
-		PortalPhysicsMode::ShouldMutatePlayerMovement());
-	const bool controlledMoveApplied = shouldReplaceOriginal
-		&& PortalControlledNoclipMovement::TryApply(
-			"client",
-			heartbeat,
-			TryGetMoveDataFromGameMovement(ecx),
-			context);
-	if (!controlledMoveApplied)
-		ClientTable.Original<FN>(Index)(ecx, edx);
+	ClientTable.Original<FN>(Index)(ecx, edx);
 	LogFocusedHookProbe("client", "PlayerMove", "Exit", heartbeat, ecx);
 	LogMovementStageSnapshot("client", "PlayerMove", "Exit", heartbeat, ecx, log);
 }
@@ -1258,6 +992,9 @@ void __fastcall CCSGameMovement::ClientProcessMovement::Detour(
 	{
 		LogPredictionCommitMovementSummary(
 			originBefore, velocityBefore, move);
+		LogOfficialCommandEndCandidate(
+			originBefore, velocityBefore, move);
+		RecordAndLogOfficialActualCommandEnd(move);
 	}
 	ClientPrediction::LogTransactionBoundary(
 		"processmovement-post-original",
@@ -1274,19 +1011,7 @@ void __fastcall CCSGameMovement::ClientWalkMove::Detour(void* ecx, void* edx)
 	++heartbeat;
 	LogMovementStageSnapshot("client", "WalkMove", "Enter", heartbeat, ecx, log);
 	LogFocusedHookProbe("client", "WalkMove", "Enter", heartbeat, ecx);
-    CMoveData* move = TryGetMoveDataFromGameMovement(ecx);
-    const Vector originBefore = move ? move->GetAbsOrigin() : Vector();
-    const Vector velocityBefore = move ? move->m_vecVelocity : Vector();
-    ClientTable.Original<FN>(Index)(ecx, edx);
-    const Vector originAfterOriginal = move ? move->GetAbsOrigin() : Vector();
-    const Vector velocityAfterOriginal = move ? move->m_vecVelocity : Vector();
-    UpdatePortalApproachVelocitySample("client", velocityAfterOriginal);
-    bool bridgeApplied = TrySyncPortalCommittedMovement("client", heartbeat, ecx);
-    if (!bridgeApplied)
-        bridgeApplied = TryApplyPortalWalkMoveNudge("client", heartbeat, ecx, velocityBefore, log);
-    if (!bridgeApplied)
-        bridgeApplied = TryPreservePortalExitVelocity("client", heartbeat, ecx, velocityBefore);
-    LogPortalWalkMoveFrame("client", heartbeat, ecx, originBefore, velocityBefore, originAfterOriginal, velocityAfterOriginal, bridgeApplied);
+	ClientTable.Original<FN>(Index)(ecx, edx);
 	LogFocusedHookProbe("client", "WalkMove", "Exit", heartbeat, ecx);
     LogMovementStageSnapshot("client", "WalkMove", "Exit", heartbeat, ecx, log);
 }
@@ -1311,16 +1036,6 @@ void __fastcall CCSGameMovement::ClientCategorizePosition::Detour(void* ecx, voi
 	LogCategorizeSnapshot("client", "Enter", heartbeat, ecx, log);
 	ClientTable.Original<FN>(Index)(ecx, edx);
 	LogCategorizeSnapshot("client", "Exit", heartbeat, ecx, log);
-}
-
-unsigned long __fastcall CCSGameMovement::ClientTestPlayerPosition::Detour(void* ecx, void* edx, const Vector& pos, int collisionGroup, trace_t* pm)
-{
-	const bool log = ShouldLogServerMovement();
-	static uint32_t heartbeat = 0u;
-	++heartbeat;
-	const unsigned long result = ClientTable.Original<FN>(Index)(ecx, edx, pos, collisionGroup, pm);
-	LogTestPlayerPositionExit("client", heartbeat, ecx, pos, collisionGroup, pm, result, log);
-	return result;
 }
 
 void CCSGameMovement::Init()
@@ -1359,29 +1074,15 @@ void CCSGameMovement::Init()
 	void* serverCategorizeVTableEntry = serverVTable ? serverVTable[CategorizePosition::Index] : nullptr;
 	void* serverTryPlayerMoveVTableEntry = serverVTable ? serverVTable[TryPlayerMove::Index] : nullptr;
 	void* serverTryPlayerMoveRejected40Entry = serverVTable ? serverVTable[40u] : nullptr;
-	const HMODULE serverModule = GetModuleHandleA("server.dll");
-	if (serverModule)
-	{
-		g_ServerStayOnGroundCandidateA = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(serverModule) + 0x000F661Bu);
-	}
-	void* serverStayOnGroundCandidateStart = FindNearbyFunctionPrologue(g_ServerStayOnGroundCandidateA, 0x700u);
-	const bool hookedStayOnGroundCandidate = serverStayOnGroundCandidateStart
-		? StayOnGround::Func.Init(serverStayOnGroundCandidateStart, &StayOnGround::Detour)
-		: false;
-	U::LogInfo("[PortalBridge] server StayOnGround candidate target=%p off=0x%08X hook=%s.\n",
-		serverStayOnGroundCandidateStart,
-		static_cast<unsigned int>(ModuleRelativeAddress("server.dll", serverStayOnGroundCandidateStart)),
-		BoolText(hookedStayOnGroundCandidate));
 	const bool serverCategorizeMatchesVTable = categorizePosition && serverCategorizeVTableEntry == reinterpret_cast<void*>(categorizePosition);
 
 	const bool hookedPlayerMove = ServerTable.Hook(&PlayerMove::Detour, PlayerMove::Index);
 	const bool hookedWalkMove = ServerTable.Hook(&WalkMove::Detour, WalkMove::Index);
 	const bool hookedFullWalkMove = ServerTable.Hook(&FullWalkMove::Detour, FullWalkMove::Index);
 	const bool hookedCategorizePosition = hookedSignatureCategorizePosition;
-	const bool hookedTestPlayerPosition = false;
 	const bool hookedTryPlayerMove = ServerTable.Hook(&TryPlayerMove::Detour, TryPlayerMove::Index);
 	const bool hookedStepMove = ServerTable.Hook(&StepMove::Detour, StepMove::Index);
-	U::LogInfo("[PortalBridge] server GameMovement diagnostics gm=%p TracePlayerBBox=signature-hook(%s) PlayerMove[%u]=%s WalkMove[%u]=%s FullWalkMove[%u]=%s CategorizePosition(void)=%p vtable[%u]=%p match=%s hook=%s TestPlayerPosition[%u]=%s(skipped: signature unverified) TryPlayerMove[%u]=%p hook=%s TryPlayerMoveRejected[40]=%p(skipped: crashed with TryPlayerMove signature) StepMove[%u]=%s(validating server index 64).\n",
+	U::LogInfo("[PortalBridge] server GameMovement diagnostics gm=%p TracePlayerBBox=signature-hook(%s) PlayerMove[%u]=%s WalkMove[%u]=%s FullWalkMove[%u]=%s CategorizePosition(void)=%p vtable[%u]=%p match=%s hook=%s TryPlayerMove[%u]=%p hook=%s TryPlayerMoveRejected[40]=%p(skipped: crashed with TryPlayerMove signature) StepMove[%u]=%s(validating server index 64).\n",
 		I::ServerGameMovement,
 		BoolText(hookedSignatureTracePlayerBBox),
 		PlayerMove::Index,
@@ -1395,8 +1096,6 @@ void CCSGameMovement::Init()
 		serverCategorizeVTableEntry,
 		BoolText(serverCategorizeMatchesVTable),
 		BoolText(hookedCategorizePosition),
-		TestPlayerPosition::Index,
-		BoolText(hookedTestPlayerPosition),
 		TryPlayerMove::Index,
 		serverTryPlayerMoveVTableEntry,
 		BoolText(hookedTryPlayerMove),
@@ -1416,18 +1115,16 @@ void CCSGameMovement::Init()
 		return;
 	}
 
-
-
+	void** clientVTable = *reinterpret_cast<void***>(I::GameMovement);
 	const bool hookedClientProcessMovement = ClientTable.Hook(&ClientProcessMovement::Detour, ClientProcessMovement::Index);
 	const bool hookedClientTracePlayerBBox = ClientTable.Hook(&ClientTracePlayerBBox::Detour, ClientTracePlayerBBox::Index);
 	const bool hookedClientPlayerMove = ClientTable.Hook(&ClientPlayerMove::Detour, ClientPlayerMove::Index);
 	const bool hookedClientWalkMove = ClientTable.Hook(&ClientWalkMove::Detour, ClientWalkMove::Index);
 	const bool hookedClientFullWalkMove = ClientTable.Hook(&ClientFullWalkMove::Detour, ClientFullWalkMove::Index);
 	const bool hookedClientCategorizePosition = false;
-	const bool hookedClientTestPlayerPosition = false;
 	const bool hookedClientTryPlayerMove = false;
 	const bool hookedClientStepMove = false;
-	U::LogInfo("[PortalBridge] client GameMovement diagnostics gm=%p ProcessMovement[%u]=%s TracePlayerBBox[%u]=%s PlayerMove[%u]=%s WalkMove[%u]=%s FullWalkMove[%u]=%s CategorizePosition[%u]=%s(skipped: not yet hooked) TestPlayerPosition[%u]=%s(skipped: signature unverified) TryPlayerMove[%u]=%s(skipped: index/signature unverified) StepMove[%u]=%s(skipped: index/signature unverified).\n",
+	U::LogInfo("[PortalBridge] client GameMovement diagnostics gm=%p ProcessMovement[%u]=%s TracePlayerBBox[%u]=%s PlayerMove[%u]=%s WalkMove[%u]=%s FullWalkMove[%u]=%s CategorizePosition[%u]=%s(skipped: not yet hooked) TryPlayerMove[%u]=%s(skipped: index/signature unverified) StepMove[%u]=%s(skipped: index/signature unverified).\n",
 		I::GameMovement,
 		ClientProcessMovement::Index,
 		BoolText(hookedClientProcessMovement),
@@ -1441,8 +1138,6 @@ void CCSGameMovement::Init()
 		BoolText(hookedClientFullWalkMove),
 		ClientCategorizePosition::Index,
 		BoolText(hookedClientCategorizePosition),
-		ClientTestPlayerPosition::Index,
-		BoolText(hookedClientTestPlayerPosition),
 		ClientTryPlayerMove::Index,
 		BoolText(hookedClientTryPlayerMove),
 		ClientStepMove::Index,

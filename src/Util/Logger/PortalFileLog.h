@@ -36,7 +36,7 @@ namespace U::PortalFileLog
         "PortalNearMiss",
         "PortalGModOffset",
         "PortalPredictionObservation",
-		"PortalPredictionCommitSync",
+		"PortalPredictionAngleSync",
 		"PortalPredictionMovement",
         "PortalMovementCommandTiming",
         "PortalRenderCadence",
@@ -52,9 +52,16 @@ namespace U::PortalFileLog
         "PortalTeleportCommit",
         "PortalContinuity",
         "PortalEyeHistory",
+        "PortalProjectedEyeHistoryRebase",
         "PortalEyeShadowPredictor",
         "PortalEyeSafety",
         "PortalPredictionCommandWindow",
+        "PortalOfficialCommandEndCandidate",
+        "PortalOfficialActualCommandEnd",
+        "PortalOfficialCommandEndAuthoritative",
+        "PortalServerCommandMovement",
+        "PortalGroundLiveCommit",
+        "PortalGroundCommitMode",
         "PortalVisualMarker",
         "PortalExitRearm",
         "PortalExitState",
@@ -64,9 +71,6 @@ namespace U::PortalFileLog
     inline constexpr const char* kLegacyBridgeNeedles[] = {
         "PortalBridge",
         "PortalTraversalFrame",
-        "PortalWalkMoveFrame",
-        "WalkMoveNudge",
-        "CommittedMoveSync",
     };
 
     inline constexpr const char* kLegacyStageProbeNeedles[] = {
@@ -161,9 +165,6 @@ namespace U::PortalFileLog
             "PortalRenderState",
             "PortalTone",
             "PortalTraversalFrame",
-            "PortalWalkMoveFrame",
-            "WalkMoveNudge",
-            "CommittedMoveSync",
         };
 
         return ContainsAny(text, kLegacyConsoleNoiseNeedles, sizeof(kLegacyConsoleNoiseNeedles) / sizeof(kLegacyConsoleNoiseNeedles[0]));

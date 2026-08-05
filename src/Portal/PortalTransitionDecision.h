@@ -56,13 +56,6 @@ namespace PortalTransitionDecision
         PortalTransitionPhase phase,
         int commandNumber,
         int committedCommandNumber);
-    bool ShouldSyncCommittedMovementAtPredictionSetup(
-        bool enabled,
-        PortalTransitionPhase phase,
-        int commandNumber,
-        int committedCommandNumber);
-    bool GetPredictionCommitMovementSyncEnabled();
-    void SetPredictionCommitMovementSyncEnabled(bool enabled);
     PortalServerRunCommandClassification ClassifyServerRunCommand(
         bool hasCommittedTeleport,
         int commandNumber,
@@ -77,6 +70,9 @@ namespace PortalTransitionDecision
     void SetServerPortalCommandAngleFixEnabled(bool enabled);
     bool GetPortalTransactionDiagnosticsEnabled();
     void SetPortalTransactionDiagnosticsEnabled(bool enabled);
+    bool GetGroundLiveCommitEnabled();
+    void SetGroundLiveCommitEnabled(bool enabled);
+    bool ShouldUseProjectedPlaneCrossing(bool groundLiveCommitEnabled, bool onGround);
     bool IsPortalPredictionDiagnosticCommandDelta(int commandDelta);
     bool IsWithinGModWallPortalBounds(float frontDistance, float feetLocalRight, float feetLocalUp);
     bool IsViewNearPortalPlane(
@@ -122,6 +118,10 @@ namespace PortalTransitionDecision
     void SetPortalEyeContinuityEnabled(bool enabled);
     bool GetPortalEyeShadowPredictorEnabled();
     void SetPortalEyeShadowPredictorEnabled(bool enabled);
+    bool GetPortalEyeShadowReleaseTailEnabled();
+    void SetPortalEyeShadowReleaseTailEnabled(bool enabled);
+    bool GetProjectedEyeHistoryRebaseEnabled();
+    void SetProjectedEyeHistoryRebaseEnabled(bool enabled);
     bool ShouldApplyEntryCameraHandoff(
         bool enabled,
         PortalTransitionPhase phase,

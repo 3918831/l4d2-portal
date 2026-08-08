@@ -4,7 +4,44 @@
 
 分支：`codex/bsp-portal-traversal`
 
-状态：设计已获用户原则确认，等待书面规格复核后进入实施计划
+状态：用户已于 2026-08-09 确认书面规格；P1 实施计划已完成
+
+## 0.1 L4D2 二进制接缝复核增补（2026-08-09）
+
+在用户确认设计后，对当前测试版本
+`J:\Games\Left 4 Dead 2 v2.2.4.3\left4dead2\bin\client.dll`
+进行了只读反汇编复核。结论是：源码级 `CInput::ClampAngles(QAngle&)`
+在该优化构建中没有保留为可独立 Hook 的函数，而是被内联进
+`CInput::AdjustAngles(int slot, float frametime)`。
+
+当前版本的确定证据如下：
+
+- `CInput::AdjustAngles` 首地址（默认 image base 下）为 `0x10133E10`；
+- 函数 ABI 为 x86 `__thiscall(this, int slot, float frametime)`，尾部为
+  `ret 8`；
+- 函数先经 engine `GetViewAngles` 取得本地角度，完成 pitch 合法化后，
+  在函数偏移 `+152` 读取本地 `roll`；
+- 偏移 `+157` 和 `+170` 的两条 `movss` 分别引用 `+50.0f` 与
+  `-50.0f`，随后把结果写回本地 `QAngle`；
+- 最后经 engine `SetViewAngles` 写回，正是日志中下一输入命令把完整
+  roll 截断至 `+/-50` 的实际接缝。
+
+因此实施目标从“Hook 编译器可能已经消除的独立 `ClampAngles` 函数”
+细化为“Hook 承载该官方调用点的 `CInput::AdjustAngles`，调用原函数后只
+恢复进入函数前的 roll”。这仍然处在 Portal SDK 的输入角度合法化层，
+不会退化为 `ClientMode::CreateMove` 事后改写，也不会只覆盖渲染角度。
+
+Hook 必须同时通过以下验证才允许实验 mutation：
+
+1. 长签名匹配 `AdjustAngles` prologue、engine view 调用与内联 roll-clamp
+   指令序列；
+2. 目标位于 `client.dll` 可执行代码区；
+3. `+157/+170` 两个常量引用运行态解引用为 `+50.0f/-50.0f`；
+4. `+210` 为 `C2 08 00`；
+5. 首次调用的 `this` 与 `I::IInput` 相同。
+
+任一条件失败时只记录诊断，`portal_visual_reorientation 1` 也不得产生
+角度 mutation，且不得自动回退到 `CreateMove` 或 render-only 方案。
 
 ## 1. 目标
 

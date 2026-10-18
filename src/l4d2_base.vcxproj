@@ -165,6 +165,7 @@
     <ClCompile Include="Hooks\BaseClient\BaseClient.cpp" />
     <ClCompile Include="Hooks\BasePlayer\BasePlayer.cpp" />
     <ClCompile Include="Hooks\ClientMode\ClientMode.cpp" />
+    <ClCompile Include="Hooks\Input\InputAngles.cpp" />
     <ClCompile Include="Hooks\ClientPrediction\ClientPrediction.cpp" />
     <ClCompile Include="Hooks\ServerPlayer\ServerPlayerRunCommand.cpp" />
     <ClCompile Include="Hooks\CL_Main\CL_Main.cpp" />
@@ -193,13 +194,20 @@
     <ClCompile Include="Portal\PortalStage1Probe.cpp" />
     <ClCompile Include="Portal\PortalPlayerTeleport.cpp" />
     <ClCompile Include="Portal\PortalEyeContinuity.cpp" />
+    <ClCompile Include="Portal\PortalEyeLeafHandoffDiagnostics.cpp" />
     <ClCompile Include="Portal\PortalRenderCadenceTracker.cpp" />
+    <ClCompile Include="Portal\PortalNativeDiagnostics.cpp" />
+    <ClCompile Include="Portal\PortalNativeFallProbe.cpp" />
+    <ClCompile Include="Portal\PortalFallWrite.cpp" />
+    <ClCompile Include="Portal\PortalNativeInterpolationHook.cpp" />
+    <ClCompile Include="Portal\PortalNativePredictionErrorHook.cpp" />
     <ClCompile Include="Portal\PortalTransition.cpp" />
     <ClCompile Include="Portal\PortalTransitionDecision.cpp" />
     <ClCompile Include="Portal\PortalTransitionSimulator.cpp" />
     <ClCompile Include="Portal\PortalVisualContinuityDiagnostics.cpp" />
     <ClCompile Include="Portal\PortalVisualContinuityTracker.cpp" />
     <ClCompile Include="Portal\PortalTransform.cpp" />
+    <ClCompile Include="Portal\PortalViewReorientation.cpp" />
     <ClCompile Include="Portal\PortalNearViewRenderPolicy.cpp" />
     <ClCompile Include="Portal\PortalRenderFixGeometry.cpp" />
     <ClCompile Include="Portal\PortalRenderFixMeshWriter.cpp" />
@@ -240,6 +248,7 @@
     <ClInclude Include="Hooks\BaseClient\BaseClient.h" />
     <ClInclude Include="Hooks\BasePlayer\BasePlayer.h" />
     <ClInclude Include="Hooks\ClientMode\ClientMode.h" />
+    <ClInclude Include="Hooks\Input\InputAngles.h" />
     <ClInclude Include="Hooks\ClientPrediction\ClientPrediction.h" />
     <ClInclude Include="Hooks\ServerPlayer\ServerPlayerRunCommand.h" />
     <ClInclude Include="Hooks\CL_Main\CL_Main.h" />
@@ -273,13 +282,33 @@
     <ClInclude Include="Portal\PortalStage1Probe.h" />
     <ClInclude Include="Portal\PortalPlayerTeleport.h" />
     <ClInclude Include="Portal\PortalEyeContinuity.h" />
+    <ClInclude Include="Portal\PortalEyeLeafHandoffDiagnostics.h" />
     <ClInclude Include="Portal\PortalRenderCadenceTracker.h" />
+    <ClInclude Include="Portal\PortalNativeDiagnostics.h" />
+    <ClInclude Include="Portal\PortalNativeCadence.h" />
+    <ClInclude Include="Portal\PortalNativeInterpolationHook.h" />
+    <ClInclude Include="Portal\PortalNativeInterpolationPolicy.h" />
+    <ClInclude Include="Portal\PortalNativePart1Policy.h" />
+    <ClInclude Include="Portal\PortalNativeOriginPolicy.h" />
+    <ClInclude Include="Portal\PortalNativeResetPolicy.h" />
+    <ClInclude Include="Portal\PortalNativeOriginFingerprint.h" />
+    <ClInclude Include="Portal\PortalNativePredictionErrorHook.h" />
+    <ClInclude Include="Portal\PortalNativePredictionErrorPolicy.h" />
+    <ClInclude Include="Portal\PortalNativePredictionErrorFingerprint.h" />
+    <ClInclude Include="Portal\PortalNativeFieldPolicy.h" />
+    <ClInclude Include="Portal\PortalNativeFallPolicy.h" />
+    <ClInclude Include="Portal\PortalNativeFallProbe.h" />
+    <ClInclude Include="Portal\PortalFallWrite.h" />
+    <ClInclude Include="Portal\PortalFallWritePolicy.h" />
+    <ClInclude Include="Portal\PortalFallWriteFingerprint.h" />
+    <ClInclude Include="Portal\PortalNativeLoggingFingerprint.h" />
     <ClInclude Include="Portal\PortalTransition.h" />
     <ClInclude Include="Portal\PortalTransitionDecision.h" />
     <ClInclude Include="Portal\PortalTransitionSimulator.h" />
     <ClInclude Include="Portal\PortalVisualContinuityDiagnostics.h" />
     <ClInclude Include="Portal\PortalVisualContinuityTracker.h" />
     <ClInclude Include="Portal\PortalTransform.h" />
+    <ClInclude Include="Portal\PortalViewReorientation.h" />
     <ClInclude Include="Portal\PortalNearViewRenderPolicy.h" />
     <ClInclude Include="Portal\PortalRenderFixGeometry.h" />
     <ClInclude Include="Portal\PortalRenderFixMeshWriter.h" />
@@ -375,6 +404,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />
+    <None Include="..\tests\PortalEyeLeafHandoffDiagnosticsTests.cpp" />
+    <None Include="..\tests\run_portal_eye_leaf_handoff_diagnostics_tests.cmd" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

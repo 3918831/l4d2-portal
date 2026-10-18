@@ -12,10 +12,14 @@ namespace
     bool g_entryCameraHandoffEnabled = true;
     bool g_portalEyeContinuityEnabled = true;
     bool g_portalEyeShadowPredictorEnabled = true;
+    bool g_portalVisualCommitSeedEnabled = true;
     bool g_portalEyeShadowReleaseTailEnabled = true;
+    bool g_portalEyeSingleOwnerEnabled = false;
     bool g_projectedEyeHistoryRebaseEnabled = true;
     bool g_serverPortalCommandAngleFixEnabled = true;
     bool g_portalTransactionDiagnosticsEnabled = true;
+    bool g_portalViewReorientationEnabled = true;
+    bool g_portalEyeCrossLeafHandoffEnabled = true;
     bool g_groundLiveCommitEnabled = true;
 }
 
@@ -72,13 +76,6 @@ bool PortalTransitionDecision::ShouldAllowTraversalEntry(
 
     return phase != PortalTransitionPhase::Cooldown
         || currentTime >= cooldownUntil;
-}
-
-float PortalTransitionDecision::ComputeExitRearmCooldownUntil(
-    float releaseTime,
-    float cooldownDuration)
-{
-    return releaseTime + std::max(0.0f, cooldownDuration);
 }
 
 bool PortalTransitionDecision::IsCommittedTeleportPredictionSyncPhase(PortalTransitionPhase phase)
@@ -171,6 +168,90 @@ void PortalTransitionDecision::SetPortalTransactionDiagnosticsEnabled(bool enabl
     g_portalTransactionDiagnosticsEnabled = enabled;
 }
 
+bool PortalTransitionDecision::GetPortalViewReorientationEnabled()
+{
+    return g_portalViewReorientationEnabled;
+}
+
+void PortalTransitionDecision::SetPortalViewReorientationEnabled(bool enabled)
+{
+    g_portalViewReorientationEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled()
+{
+    return g_portalEyeCrossLeafHandoffEnabled;
+}
+
+void PortalTransitionDecision::SetPortalEyeCrossLeafHandoffEnabled(bool enabled)
+{
+    g_portalEyeCrossLeafHandoffEnabled = enabled;
+}
+
+bool PortalTransitionDecision::ShouldAllowPortalEyeCrossLeafHandoff(
+    bool enabled,
+    bool leafMismatch,
+    bool geometryClear)
+{
+    return enabled && leafMismatch && geometryClear;
+}
+
+PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision
+PortalTransitionDecision::PortalEyeCrossLeafHandoffController::EvaluateFrame(
+    bool enabled,
+    bool leafMismatch,
+    bool geometryClear,
+    bool runtimeSafetyFailure)
+{
+    PortalEyeCrossLeafHandoffFrameDecision decision;
+    decision.allowCandidate = !runtimeSafetyFailure
+        && ShouldAllowPortalEyeCrossLeafHandoff(
+            enabled,
+            leafMismatch,
+            geometryClear);
+    if (decision.allowCandidate)
+    {
+        decision.emitAllowEdge = !m_authorized;
+        m_authorized = true;
+    }
+    else if (m_authorized && (runtimeSafetyFailure || leafMismatch))
+    {
+        decision.emitRejectEdge = true;
+        m_authorized = false;
+    }
+    return decision;
+}
+
+bool PortalTransitionDecision::PortalEyeCrossLeafHandoffController::
+ConsumeHorizonExpiryProbeEdge(
+    bool diagnosticsEnabled,
+    bool releaseTailEnded,
+    bool horizonExpired)
+{
+    if (!diagnosticsEnabled
+        || !releaseTailEnded
+        || !horizonExpired
+        || m_horizonExpiryProbeEmitted)
+    {
+        return false;
+    }
+
+    m_horizonExpiryProbeEmitted = true;
+    return true;
+}
+
+void PortalTransitionDecision::PortalEyeCrossLeafHandoffController::Reset()
+{
+    m_authorized = false;
+    m_horizonExpiryProbeEmitted = false;
+}
+
+bool PortalTransitionDecision::PortalEyeCrossLeafHandoffController::
+IsAuthorized() const
+{
+    return m_authorized;
+}
+
 bool PortalTransitionDecision::GetGroundLiveCommitEnabled()
 {
     return g_groundLiveCommitEnabled;
@@ -195,6 +276,23 @@ bool PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(
     // to expose prediction reconciliation. Later commands repeated the same
     // stabilized state and only inflated the focused traversal log.
     return commandDelta >= 0 && commandDelta <= 1;
+}
+
+bool PortalTransitionDecision::IsFloorToWallDiagnosticOrientation(
+    float entryNormalZ,
+    float exitNormalZ)
+{
+    constexpr float kFloorNormalMinimumZ = 0.85f;
+    constexpr float kWallNormalMaximumZ = 0.25f;
+    return std::fabs(entryNormalZ) >= kFloorNormalMinimumZ
+        && std::fabs(exitNormalZ) <= kWallNormalMaximumZ;
+}
+
+bool PortalTransitionDecision::IsFloorToWallDiagnosticCommandDelta(
+    int commandDelta)
+{
+    constexpr int kMaximumCommandDelta = 32;
+    return commandDelta >= 0 && commandDelta <= kMaximumCommandDelta;
 }
 
 bool PortalTransitionDecision::IsWithinGModWallPortalBounds(
@@ -348,6 +446,28 @@ void PortalTransitionDecision::SetPortalEyeShadowPredictorEnabled(bool enabled)
     g_portalEyeShadowPredictorEnabled = enabled;
 }
 
+bool PortalTransitionDecision::GetPortalVisualCommitSeedEnabled()
+{
+    return g_portalVisualCommitSeedEnabled;
+}
+
+void PortalTransitionDecision::SetPortalVisualCommitSeedEnabled(bool enabled)
+{
+    g_portalVisualCommitSeedEnabled = enabled;
+}
+
+PortalVisualCommitSeedEdgeAction
+PortalTransitionDecision::DecidePortalVisualCommitSeedEdgeAction(
+    bool wasEnabled,
+    bool enabled)
+{
+    PortalVisualCommitSeedEdgeAction action;
+    action.changed = wasEnabled != enabled;
+    action.clearPendingSeed = action.changed;
+    action.clearSeedDerivedPredictor = action.changed && !enabled;
+    return action;
+}
+
 bool PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled()
 {
     return g_portalEyeShadowReleaseTailEnabled;
@@ -356,6 +476,78 @@ bool PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled()
 void PortalTransitionDecision::SetPortalEyeShadowReleaseTailEnabled(bool enabled)
 {
     g_portalEyeShadowReleaseTailEnabled = enabled;
+}
+
+bool PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled()
+{
+    return g_portalEyeSingleOwnerEnabled;
+}
+
+void PortalTransitionDecision::SetPortalEyeSingleOwnerEnabled(bool enabled)
+{
+    g_portalEyeSingleOwnerEnabled = enabled;
+}
+
+PortalEyeSingleOwnerEdgeAction
+PortalTransitionDecision::DecidePortalEyeSingleOwnerEdgeAction(
+    bool wasEnabled,
+    bool enabled)
+{
+    PortalEyeSingleOwnerEdgeAction action;
+    action.changed = wasEnabled != enabled;
+    action.resetEyeHistoryState = action.changed;
+    action.resetShadowState = action.changed;
+    action.clearPendingSeed = action.changed;
+    action.resetTransactionVisualState = action.changed;
+    return action;
+}
+
+bool PortalTransitionDecision::ShouldFailClosedForMissingPortalEyeSafetyInterface(
+    bool shadowViewActive,
+    bool engineTraceAvailable)
+{
+    return shadowViewActive && !engineTraceAvailable;
+}
+
+bool PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+    bool forwardAvailable,
+    float forwardFraction,
+    bool forwardStartSolid,
+    bool forwardAllSolid,
+    bool forwardEndFinite,
+    bool reverseAvailable,
+    float reverseFraction,
+    bool reverseStartSolid,
+    bool reverseAllSolid,
+    bool reverseEndFinite)
+{
+    constexpr float kFullTraceFractionTolerance = 0.001f;
+    const auto isFullClearTrace = [kFullTraceFractionTolerance](bool available,
+        float fraction,
+        bool startSolid,
+        bool allSolid,
+        bool endFinite)
+    {
+        return available
+            && std::isfinite(fraction)
+            && !startSolid
+            && !allSolid
+            && endFinite
+            && fraction >= 1.0f - kFullTraceFractionTolerance
+            && fraction <= 1.0f;
+    };
+    return isFullClearTrace(
+            forwardAvailable,
+            forwardFraction,
+            forwardStartSolid,
+            forwardAllSolid,
+            forwardEndFinite)
+        && isFullClearTrace(
+            reverseAvailable,
+            reverseFraction,
+            reverseStartSolid,
+            reverseAllSolid,
+            reverseEndFinite);
 }
 
 bool PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled()
@@ -473,6 +665,24 @@ bool PortalTransitionDecision::ShouldCommitPlaneCrossing(
         && movingIntoPortal
         && currentSignedDepth < 0.0f
         && (!hasPreviousDepth || previousSignedDepth >= 0.0f);
+}
+
+bool PortalTransitionDecision::ShouldCommitExitRearmCatchup(
+    bool candidateIsReleasedExitPortal,
+    float previousSignedDepth,
+    float currentSignedDepth,
+    bool hasPreviousDepth,
+    bool insideAperture,
+    bool movingIntoPortal)
+{
+    return !candidateIsReleasedExitPortal
+        && hasPreviousDepth
+        && ShouldCommitPlaneCrossing(
+            previousSignedDepth,
+            currentSignedDepth,
+            hasPreviousDepth,
+            insideAperture,
+            movingIntoPortal);
 }
 
 bool PortalTransitionDecision::TryComputePortalPlaneCrossingFraction(

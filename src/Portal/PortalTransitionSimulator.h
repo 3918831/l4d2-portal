@@ -98,6 +98,34 @@ struct PortalMovementCommandEndDiagnostic
     Vector exitPlaneNormal;
 };
 
+struct PortalFloorWallDiagnosticContext
+{
+    std::uint32_t transactionId = 0;
+    int committedCommandNumber = 0;
+    int commitTick = -1;
+    float commitTime = 0.0f;
+    PortalTransitionSide entrySide = PortalTransitionSide::None;
+    PortalTransitionSide exitSide = PortalTransitionSide::None;
+    bool projectedPath = false;
+    bool wasOnGround = false;
+    Vector entryPlaneOrigin;
+    Vector entryPlaneNormal;
+    Vector entryRight;
+    Vector entryUp;
+    Vector exitPlaneOrigin;
+    Vector exitPlaneNormal;
+    Vector exitRight;
+    Vector exitUp;
+    Vector preOrigin;
+    Vector preEye;
+    Vector preVelocity;
+    QAngle preViewAngles;
+    Vector committedOrigin;
+    Vector committedEye;
+    Vector committedVelocity;
+    QAngle committedViewAngles;
+};
+
 class CPortalTransitionSimulator
 {
 public:
@@ -124,6 +152,10 @@ public:
     bool TryGetMovementCommandEndDiagnosticForWindow(
         int commandNumber,
         PortalMovementCommandEndDiagnostic* result,
+        int* commandDelta) const;
+    bool TryGetFloorWallDiagnostic(
+        int commandNumber,
+        PortalFloorWallDiagnosticContext* result,
         int* commandDelta) const;
     bool RecordClientMovementCommandEndDiagnostic(
         int commandNumber,
@@ -174,8 +206,15 @@ private:
 
     void UpdatePhase(C_TerrorPlayer* player, CUserCmd* cmd, const PortalProbe* probe, float currentTime);
     void LogTraversalFrame(CUserCmd* cmd, C_TerrorPlayer* player, const PortalPlayerAnchor& anchor, const PortalProbe& blue, const PortalProbe& orange) const;
+    void LogBlockedTraversalWindow(
+        CUserCmd* cmd,
+        C_TerrorPlayer* player,
+        const PortalPlayerAnchor& anchor,
+        const PortalProbe& blue,
+        const PortalProbe& orange,
+        float currentTime) const;
     void LogNearMiss(const PortalProbe& probe, float currentTime);
-    void UpdateExitPhase(const PortalProbe& exitProbe, float currentTime);
+    bool UpdateExitPhase(const PortalProbe& exitProbe, float currentTime);
     bool ShouldPredictPlaneCrossing(C_TerrorPlayer* player, const PortalProbe& probe) const;
     bool TryCommitPredictedPlaneCrossing(C_TerrorPlayer* player, CUserCmd* cmd, const PortalProbe& probe, float currentTime);
     bool TryCommitTeleport(C_TerrorPlayer* player, CUserCmd* cmd, const PortalProbe& probe, float currentTime, const PortalPlayerAnchor* overrideAnchor = nullptr, Vector* committedOrigin = nullptr, Vector* committedVelocity = nullptr, int commandNumberOverride = 0);
@@ -209,8 +248,12 @@ private:
     bool m_hasLastCommittedEntryToExit = false;
     bool m_serverPortalCommandAngleFixPending = false;
     std::uint32_t m_lastCommittedTransactionId = 0;
+    float m_lastTeleportCommitTime = 0.0f;
+    bool m_hasLastTeleportCommitTime = false;
     PortalMovementCommandEndDiagnostic m_lastMovementCommandEndDiagnostic;
     bool m_hasLastMovementCommandEndDiagnostic = false;
+    PortalFloorWallDiagnosticContext m_floorWallDiagnostic;
+    bool m_hasFloorWallDiagnostic = false;
     PortalPlayerAnchor m_previousAnchor;
     Vector m_previousBlueOrigin;
     Vector m_previousBlueNormal;

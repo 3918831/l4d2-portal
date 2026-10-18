@@ -4,6 +4,8 @@
 #include "../../Portal/L4D2_Portal.h"
 #include "../../Portal/PortalPlayerTeleport.h"
 #include "../../Portal/PortalTransitionDecision.h"
+#include "../../Portal/PortalNativeDiagnostics.h"
+#include "../../Portal/PortalFallWrite.h"
 #include "../../Util/Logger/Logger.h"
 #include "../../Util/Logger/PortalFileLog.h"
 #include <intrin.h>
@@ -838,6 +840,9 @@ void __fastcall CCSGameMovement::ClientStepMove::Detour(void* ecx, void* edx, Ve
 
 void __fastcall CCSGameMovement::PlayerMove::Detour(void* ecx, void* edx)
 {
+    const auto* fallCommand=ServerPlayerRunCommand::GetActiveCommand();
+    PortalFallWrite::PlayerMoveScope fallScope(ecx,fallCommand?fallCommand->command_number:0);
+    PortalNativeDiagnostics::FallMovement(true,false,ecx,ServerPlayerRunCommand::GetActiveCommand());
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -931,6 +936,7 @@ void __fastcall CCSGameMovement::WalkMove::Detour(void* ecx, void* edx)
 
 void __fastcall CCSGameMovement::FullWalkMove::Detour(void* ecx, void* edx)
 {
+    PortalNativeDiagnostics::FallMovement(true,true,ecx,ServerPlayerRunCommand::GetActiveCommand());
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -959,6 +965,7 @@ void __fastcall CCSGameMovement::CategorizePosition::Detour(void* ecx, void* edx
 
 void __fastcall CCSGameMovement::ClientPlayerMove::Detour(void* ecx, void* edx)
 {
+    PortalNativeDiagnostics::FallMovement(false,false,ecx,ClientPrediction::GetActiveCommand());
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -1018,6 +1025,7 @@ void __fastcall CCSGameMovement::ClientWalkMove::Detour(void* ecx, void* edx)
 
 void __fastcall CCSGameMovement::ClientFullWalkMove::Detour(void* ecx, void* edx)
 {
+    PortalNativeDiagnostics::FallMovement(false,true,ecx,ClientPrediction::GetActiveCommand());
 	const bool log = ShouldLogServerMovement();
 	static uint32_t heartbeat = 0u;
 	++heartbeat;
@@ -1071,6 +1079,7 @@ void CCSGameMovement::Init()
 
 
 	void** serverVTable = *reinterpret_cast<void***>(I::ServerGameMovement);
+    PortalFallWrite::Initialize(serverVTable?serverVTable[PlayerMove::Index]:nullptr);
 	void* serverCategorizeVTableEntry = serverVTable ? serverVTable[CategorizePosition::Index] : nullptr;
 	void* serverTryPlayerMoveVTableEntry = serverVTable ? serverVTable[TryPlayerMove::Index] : nullptr;
 	void* serverTryPlayerMoveRejected40Entry = serverVTable ? serverVTable[40u] : nullptr;

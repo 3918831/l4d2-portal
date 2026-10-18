@@ -2,6 +2,8 @@
 
 #include "../../Portal/L4D2_Portal.h"
 #include "../../Portal/PortalPlayerTeleport.h"
+#include "../../Portal/PortalNativeDiagnostics.h"
+#include "../../Portal/PortalNativeFallProbe.h"
 #include "../../Portal/PortalTransitionSimulator.h"
 #include "../../SDK/L4D2/Entities/C_TerrorPlayer.h"
 #include "../../SDK/L4D2/Includes/usercmd.h"
@@ -467,11 +469,14 @@ namespace
         }
     }
 
-    bool ShouldLog(const PortalServerRunCommandObservation& observation)
+    bool ShouldLog(
+        const PortalServerRunCommandObservation& observation,
+        bool floorWallDiagnosticWindow)
     {
         return observation.hasCommittedTeleport
-            && observation.commandDelta >= -1
-            && observation.commandDelta <= 1;
+            && ((observation.commandDelta >= -1
+                    && observation.commandDelta <= 1)
+                || floorWallDiagnosticWindow);
     }
 
     bool AnglesEqual(const Vector& first, const Vector& second)
@@ -759,8 +764,17 @@ void __fastcall ServerPlayerRunCommand::PlayerRunCommand::Detour(
         isLocalServerPlayer
         && command
         && simulator.ObserveServerRunCommand(command, &observation);
+    PortalFloorWallDiagnosticContext floorWallDiagnostic;
+    int floorWallCommandDelta = 0;
+    const bool floorWallDiagnosticWindow =
+        isLocalServerPlayer
+        && command
+        && simulator.TryGetFloorWallDiagnostic(
+            command->command_number,
+            &floorWallDiagnostic,
+            &floorWallCommandDelta);
     const bool shouldLog =
-        observed && ShouldLog(observation);
+        observed && ShouldLog(observation, floorWallDiagnosticWindow);
     const Vector anglesBefore =
         command ? command->viewangles : Vector();
     const float forwardMoveBefore =
@@ -890,8 +904,14 @@ void __fastcall ServerPlayerRunCommand::PlayerRunCommand::Detour(
 
     CUserCmd* previousActiveCommand = g_activeServerCommand;
     g_activeServerCommand = isLocalServerPlayer ? command : nullptr;
+    if(isLocalServerPlayer&&command)
+        if(const auto capture=PortalNativeDiagnostics::FallCapture())
+            PortalNativeDiagnostics::FallState(0,PortalNativeFallProbe::Server(ecx),command,capture);
     Func.Original<FN>()(ecx, edx, command, moveHelper);
     g_activeServerCommand = previousActiveCommand;
+    if(ecx==g_localServerPlayer.load(std::memory_order_acquire)&&command)
+        if(const auto capture=PortalNativeDiagnostics::FallCapture())
+            PortalNativeDiagnostics::FallState(1,PortalNativeFallProbe::Server(ecx),command,capture);
 
     if (shouldLog && command)
     {
@@ -936,5 +956,46 @@ void __fastcall ServerPlayerRunCommand::PlayerRunCommand::Detour(
             serverStateAfter.moveType,
             shouldApplyAngleFix ? "true" : "false",
             changedByOriginal ? "true" : "false");
+
+        if (floorWallDiagnosticWindow
+            && PortalNativeDiagnostics::AllowFloorWallCommand(floorWallDiagnostic.transactionId, true))
+        {
+            const Vector commitRelative =
+                serverStateAfter.origin - floorWallDiagnostic.committedOrigin;
+            const float exitDepth =
+                (serverStateAfter.origin - floorWallDiagnostic.exitPlaneOrigin)
+                    .Dot(floorWallDiagnostic.exitPlaneNormal);
+            U::LogInfo(
+                "[PortalFloorWallServerCommand] txn=%u committedCmd=%d cmd=%d commandDelta=%d call=%u stateValid(origin=%s velocity=%s moveType=%s) origin=(%.3f %.3f %.3f) commitRelative=(%.3f %.3f %.3f) exitDepth=%.3f velocity=(%.3f %.3f %.3f) speed2D=%.3f speed3D=%.3f worldZ=%.3f exitNormal=%.3f exitRight=%.3f exitUp=%.3f moveType=%d cmdAngles=(%.3f %.3f %.3f) diagnosticMutation=false behaviorMutation=false.\n",
+                floorWallDiagnostic.transactionId,
+                floorWallDiagnostic.committedCommandNumber,
+                command->command_number,
+                floorWallCommandDelta,
+                callSequence,
+                serverStateAfter.originValid ? "true" : "false",
+                serverStateAfter.velocityValid ? "true" : "false",
+                serverStateAfter.moveTypeValid ? "true" : "false",
+                serverStateAfter.origin.x,
+                serverStateAfter.origin.y,
+                serverStateAfter.origin.z,
+                commitRelative.x,
+                commitRelative.y,
+                commitRelative.z,
+                exitDepth,
+                serverStateAfter.velocity.x,
+                serverStateAfter.velocity.y,
+                serverStateAfter.velocity.z,
+                Speed2D(serverStateAfter.velocity),
+                serverStateAfter.velocity.Lenght(),
+                serverStateAfter.velocity.z,
+                serverStateAfter.velocity.Dot(
+                    floorWallDiagnostic.exitPlaneNormal),
+                serverStateAfter.velocity.Dot(floorWallDiagnostic.exitRight),
+                serverStateAfter.velocity.Dot(floorWallDiagnostic.exitUp),
+                serverStateAfter.moveType,
+                command->viewangles.x,
+                command->viewangles.y,
+                command->viewangles.z);
+        }
     }
 }

@@ -6,6 +6,7 @@
 #include "../../SDK/L4D2/Interfaces/ICvar.h"
 #include "../../SDK/L4D2/Entities/C_TerrorPlayer.h"
 #include "../../Portal/L4D2_Portal.h"
+#include "../../Portal/PortalNativeDiagnostics.h"
 #include <cstring>
 
 using namespace Hooks;
@@ -24,6 +25,7 @@ bool __fastcall ClientMode::CreateMove::Detour(void* ecx, void* edx, float input
         return result;
     }
 
+    PortalNativeDiagnostics::ObserveInput(cmd);
     G::G_L4D2Portal.m_PortalTransitionSimulator.Update(cmd);
     G::G_L4D2Portal.m_PortalCollisionBridge.BeginFrame(cmd->command_number);
     G::G_L4D2Portal.m_PortalStage1Probe.Update(

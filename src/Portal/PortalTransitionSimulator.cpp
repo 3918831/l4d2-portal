@@ -11,6 +11,7 @@
 #include "../Util/Logger/Logger.h"
 #include "../Util/Logger/PortalFileLog.h"
 #include "PortalPlayerTeleport.h"
+#include "PortalFallWrite.h"
 #include "PortalBspCollisionCarver.h"
 #include "PortalTransitionDecision.h"
 #pragma warning(push)
@@ -25,7 +26,6 @@ namespace
     constexpr float kExitDistance = 72.0f;
     constexpr float kExitReleaseDistance = 24.0f;
     constexpr float kExitPlacementEpsilon = 2.0f;
-    constexpr float kTeleportCooldown = 0.20f;
     constexpr float kMoveIntoPortalDot = -20.0f;
     // Official Portal commits only after the player center is behind the
     // entry plane, which the 180-degree transform maps to the exit front.
@@ -85,6 +85,7 @@ namespace
 
 void CPortalTransitionSimulator::Reset()
 {
+    PortalFallWrite::Reset("simulator-reset");
     G::G_L4D2Portal.m_PortalTransition.RestoreControlledMoveType(GetLocalPlayer(), "simulator-reset");
     m_context = {};
     m_nextReadinessLogTime = 0.0f;
@@ -101,8 +102,12 @@ void CPortalTransitionSimulator::Reset()
     m_hasLastCommittedEntryToExit = false;
     m_serverPortalCommandAngleFixPending = false;
     m_lastCommittedTransactionId = 0;
+    m_lastTeleportCommitTime = 0.0f;
+    m_hasLastTeleportCommitTime = false;
     m_lastMovementCommandEndDiagnostic = {};
     m_hasLastMovementCommandEndDiagnostic = false;
+    m_floorWallDiagnostic = {};
+    m_hasFloorWallDiagnostic = false;
     m_previousAnchor = {};
     m_previousBlueOrigin = Vector();
     m_previousBlueNormal = Vector();
@@ -198,13 +203,57 @@ void CPortalTransitionSimulator::Update(CUserCmd* cmd)
 
     if (m_context.phase == PortalTransitionPhase::ExitingPortal)
     {
+        LogBlockedTraversalWindow(
+            cmd,
+            player,
+            anchor,
+            blueProbe,
+            orangeProbe,
+            currentTime);
+        const PortalTransitionSide catchupEntrySide = m_context.entrySide;
+        const PortalTransitionSide releasedExitSide = m_context.exitSide;
         const PortalProbe& exitProbe = m_context.exitSide == PortalTransitionSide::Blue ? blueProbe : orangeProbe;
-        UpdateExitPhase(exitProbe, currentTime);
+        if (!UpdateExitPhase(exitProbe, currentTime))
+            return;
+
+        const PortalProbe& catchupProbe = catchupEntrySide == PortalTransitionSide::Blue
+            ? blueProbe
+            : orangeProbe;
+        const bool eligible = PortalTransitionDecision::ShouldCommitExitRearmCatchup(
+            catchupEntrySide == releasedExitSide,
+            catchupProbe.previousCenterDistance,
+            catchupProbe.centerDistance,
+            catchupProbe.hasPreviousSample,
+            HasCrossingApertureEvidence(catchupProbe),
+            catchupProbe.movingIntoPortal);
+        const bool committed = eligible
+            && TryCommitTeleport(player, cmd, catchupProbe, currentTime);
+        U::LogInfo(
+            "[PortalExitRearmCatchup] cmd=%d releasedExit=%s candidateEntry=%s previousDepth=%.3f currentDepth=%.3f hasPrevious=%s swept=%s sweepFraction=%.3f apertureEvidence=%s moving=%s eligible=%s committed=%s behaviorMutation=exit-history-rebase-and-catchup-only.\n",
+            cmd->command_number,
+            SideName(releasedExitSide),
+            SideName(catchupEntrySide),
+            catchupProbe.previousCenterDistance,
+            catchupProbe.centerDistance,
+            BoolText(catchupProbe.hasPreviousSample),
+            BoolText(catchupProbe.sweptThroughAperture),
+            catchupProbe.sweptPlaneFraction,
+            BoolText(HasCrossingApertureEvidence(catchupProbe)),
+            BoolText(catchupProbe.movingIntoPortal),
+            BoolText(eligible),
+            BoolText(committed));
         return;
     }
 
     if (m_context.phase == PortalTransitionPhase::Cooldown)
     {
+        LogBlockedTraversalWindow(
+            cmd,
+            player,
+            anchor,
+            blueProbe,
+            orangeProbe,
+            currentTime);
         if (currentTime >= m_context.cooldownUntil)
             ClearPhase(currentTime, "teleport-cooldown-complete");
         return;
@@ -307,6 +356,142 @@ void CPortalTransitionSimulator::LogTraversalFrame(
         player->m_hGroundEntity().ToInt(),
         BoolText(tracked->insideAperture),
         BoolText(tracked->movingIntoPortal));
+}
+
+void CPortalTransitionSimulator::LogBlockedTraversalWindow(
+    CUserCmd* cmd,
+    C_TerrorPlayer* player,
+    const PortalPlayerAnchor& anchor,
+    const PortalProbe& blue,
+    const PortalProbe& orange,
+    float currentTime) const
+{
+    if (!cmd
+        || !player
+        || !PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+    {
+        return;
+    }
+
+    if (m_context.phase != PortalTransitionPhase::ExitingPortal
+        && m_context.phase != PortalTransitionPhase::Cooldown)
+    {
+        return;
+    }
+
+    const auto timeToPlane = [](const PortalProbe& probe)
+    {
+        if (probe.sweptThroughAperture
+            || (probe.hasPreviousSample
+                && probe.previousCenterDistance >= 0.0f
+                && probe.centerDistance < 0.0f))
+        {
+            return 0.0f;
+        }
+
+        if (probe.centerDistance >= 0.0f && probe.velDot < -0.001f)
+            return probe.centerDistance / -probe.velDot;
+
+        return -1.0f;
+    };
+
+    const auto wouldCommit = [this](const PortalProbe& probe)
+    {
+        return PortalTransitionDecision::ShouldCommitPlaneCrossing(
+            probe.previousCenterDistance,
+            probe.centerDistance,
+            probe.hasPreviousSample,
+            HasCrossingApertureEvidence(probe),
+            probe.movingIntoPortal);
+    };
+
+    const float blueTimeToPlane = timeToPlane(blue);
+    const float orangeTimeToPlane = timeToPlane(orange);
+    const bool blueWouldCommit = wouldCommit(blue);
+    const bool orangeWouldCommit = wouldCommit(orange);
+    const auto isRelevant = [](const PortalProbe& probe, float timeToPortal, bool commitCandidate)
+    {
+        return commitCandidate
+            || probe.sweptThroughAperture
+            || (probe.insideAperture && probe.movingIntoPortal)
+            || (timeToPortal >= 0.0f && timeToPortal <= 0.30f)
+            || std::fabs(probe.centerDistance) <= kExitDistance;
+    };
+
+    if (!isRelevant(blue, blueTimeToPlane, blueWouldCommit)
+        && !isRelevant(orange, orangeTimeToPlane, orangeWouldCommit))
+    {
+        return;
+    }
+
+    const float cooldownRemaining = m_context.phase == PortalTransitionPhase::Cooldown
+        ? std::max(0.0f, m_context.cooldownUntil - currentTime)
+        : -1.0f;
+    const float sinceCommit = m_hasLastTeleportCommitTime
+        ? std::max(0.0f, currentTime - m_lastTeleportCommitTime)
+        : -1.0f;
+    const float speed3D = std::sqrt(anchor.velocity.LenghtSqr());
+    const float speed2D = std::sqrt(
+        anchor.velocity.x * anchor.velocity.x
+        + anchor.velocity.y * anchor.velocity.y);
+    const bool blueArrivesBeforeUnlock = blueTimeToPlane >= 0.0f
+        && (m_context.phase == PortalTransitionPhase::ExitingPortal
+            || blueTimeToPlane <= cooldownRemaining);
+    const bool orangeArrivesBeforeUnlock = orangeTimeToPlane >= 0.0f
+        && (m_context.phase == PortalTransitionPhase::ExitingPortal
+            || orangeTimeToPlane <= cooldownRemaining);
+
+    U::LogInfo(
+        "[PortalTraversalGate] cmd=%d epoch=%u lastTxn=%u time=%.6f phase=%s blockReason=%s sinceCommit=%.6f cooldownRemaining=%.6f origin=(%.3f %.3f %.3f) center=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) speed2D=%.3f speed3D=%.3f moveType=%u flags=0x%X onGround=%s ground=0x%X "
+        "blue(depth(previous=%.3f current=%.3f observed=%.3f origin=%.3f eye=%.3f feet=%.3f) inside=%s moving=%s swept=%s sweepFraction=%.3f velDot=%.3f timeToPlane=%.6f arrivesBeforeUnlock=%s wouldCommitIfIdle=%s) "
+        "orange(depth(previous=%.3f current=%.3f observed=%.3f origin=%.3f eye=%.3f feet=%.3f) inside=%s moving=%s swept=%s sweepFraction=%.3f velDot=%.3f timeToPlane=%.6f arrivesBeforeUnlock=%s wouldCommitIfIdle=%s) behaviorMutation=false.\n",
+        cmd->command_number,
+        m_context.traversalEpoch,
+        m_lastCommittedTransactionId,
+        currentTime,
+        PhaseName(m_context.phase),
+        m_context.phase == PortalTransitionPhase::ExitingPortal
+            ? "exit-spatial-lock"
+            : "temporal-cooldown",
+        sinceCommit,
+        cooldownRemaining,
+        anchor.origin.x, anchor.origin.y, anchor.origin.z,
+        anchor.center.x, anchor.center.y, anchor.center.z,
+        anchor.velocity.x, anchor.velocity.y, anchor.velocity.z,
+        speed2D,
+        speed3D,
+        static_cast<unsigned int>(player->m_MoveType()),
+        player->m_fFlags(),
+        BoolText((player->m_fFlags() & FL_ONGROUND) != 0),
+        player->m_hGroundEntity().ToInt(),
+        blue.previousCenterDistance,
+        blue.centerDistance,
+        blue.observedCenterDistance,
+        blue.originDistance,
+        blue.eyeDistance,
+        blue.feetDistance,
+        BoolText(blue.insideAperture),
+        BoolText(blue.movingIntoPortal),
+        BoolText(blue.sweptThroughAperture),
+        blue.sweptPlaneFraction,
+        blue.velDot,
+        blueTimeToPlane,
+        BoolText(blueArrivesBeforeUnlock),
+        BoolText(blueWouldCommit),
+        orange.previousCenterDistance,
+        orange.centerDistance,
+        orange.observedCenterDistance,
+        orange.originDistance,
+        orange.eyeDistance,
+        orange.feetDistance,
+        BoolText(orange.insideAperture),
+        BoolText(orange.movingIntoPortal),
+        BoolText(orange.sweptThroughAperture),
+        orange.sweptPlaneFraction,
+        orange.velDot,
+        orangeTimeToPlane,
+        BoolText(orangeArrivesBeforeUnlock),
+        BoolText(orangeWouldCommit));
 }
 
 void CPortalTransitionSimulator::LogNearMiss(const PortalProbe& probe, float currentTime)
@@ -528,6 +713,31 @@ bool CPortalTransitionSimulator::TryGetMovementCommandEndDiagnosticForWindow(
         return false;
 
     *result = m_lastMovementCommandEndDiagnostic;
+    if (commandDelta)
+        *commandDelta = delta;
+    return true;
+}
+
+bool CPortalTransitionSimulator::TryGetFloorWallDiagnostic(
+    int commandNumber,
+    PortalFloorWallDiagnosticContext* result,
+    int* commandDelta) const
+{
+    if (!result
+        || !m_hasFloorWallDiagnostic
+        || m_floorWallDiagnostic.transactionId == 0
+        || m_floorWallDiagnostic.committedCommandNumber <= 0
+        || commandNumber <= 0)
+    {
+        return false;
+    }
+
+    const int delta =
+        commandNumber - m_floorWallDiagnostic.committedCommandNumber;
+    if (!PortalTransitionDecision::IsFloorToWallDiagnosticCommandDelta(delta))
+        return false;
+
+    *result = m_floorWallDiagnostic;
     if (commandDelta)
         *commandDelta = delta;
     return true;
@@ -906,7 +1116,7 @@ void CPortalTransitionSimulator::UpdatePhase(C_TerrorPlayer* player, CUserCmd* c
     }
 }
 
-void CPortalTransitionSimulator::UpdateExitPhase(const PortalProbe& exitProbe, float currentTime)
+bool CPortalTransitionSimulator::UpdateExitPhase(const PortalProbe& exitProbe, float currentTime)
 {
     m_context.lastUpdateTime = currentTime;
     m_context.signedDepth = exitProbe.centerDistance;
@@ -917,30 +1127,26 @@ void CPortalTransitionSimulator::UpdateExitPhase(const PortalProbe& exitProbe, f
     const float frontDistance = std::min(exitProbe.originDistance, exitProbe.eyeDistance);
     if (PortalTransitionDecision::ShouldReleaseExitControlledMove(frontDistance, exitProbe.insideAperture))
     {
-        // Start the temporal guard only after the spatial exit lock releases.
-        // With ExactTransform, a slow player can remain in ExitingPortal longer
-        // than the original commit-time cooldown duration.
-        m_context.cooldownUntil = PortalTransitionDecision::ComputeExitRearmCooldownUntil(
-            currentTime,
-            kTeleportCooldown);
-        U::LogInfo("[PortalExitState] phase ExitingPortal/%s -> Cooldown/%s reason=exit-cleared frontDist=%.2f originDepth=%.2f eyeDepth=%.2f centerDepth=%.2f inside=%s cooldownRemaining=%.3f.\n",
+        // The exit overlap itself is the rearm guard. A fixed temporal guard
+        // after this point blocks legitimate rapid traversal of the other
+        // portal, while Portal's HandlePortalling lifecycle is spatial and
+        // portal-environment based.
+        U::LogInfo("[PortalExitState] phase ExitingPortal/%s -> Idle/None reason=exit-spatial-rearm-complete frontDist=%.2f originDepth=%.2f eyeDepth=%.2f centerDepth=%.2f inside=%s temporalCooldown=false.\n",
             SideName(m_context.entrySide),
-            SideName(m_context.exitSide),
             frontDistance,
             exitProbe.originDistance,
             exitProbe.eyeDistance,
             exitProbe.centerDistance,
-            BoolText(exitProbe.insideAperture),
-            std::max(0.0f, m_context.cooldownUntil - currentTime));
-        G::G_L4D2Portal.m_PortalTransition.RestoreControlledMoveType(GetLocalPlayer(), "exit-cleared");
-        m_context.phase = PortalTransitionPhase::Cooldown;
-        U::LogInfo("[PortalExitRearm] released exit=%s spatialFront=%.2f inside=%s cooldownUntil=%.3f cooldownDuration=%.3f.\n",
+            BoolText(exitProbe.insideAperture));
+        U::LogInfo("[PortalExitRearm] released exit=%s spatialFront=%.2f inside=%s rearmPolicy=spatial-only nextPhase=Idle temporalCooldown=false traversalAllowedNextCommand=true.\n",
             SideName(m_context.exitSide),
             frontDistance,
-            BoolText(exitProbe.insideAperture),
-            m_context.cooldownUntil,
-            kTeleportCooldown);
+            BoolText(exitProbe.insideAperture));
+        ClearPhase(currentTime, "exit-spatial-rearm-complete");
+        return true;
     }
+
+    return false;
 }
 
 bool CPortalTransitionSimulator::TryCommitPredictedPlaneCrossing(
@@ -1162,7 +1368,7 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
     m_context.exitSide = exitSide;
     m_context.lastUpdateTime = currentTime;
     m_context.signedDepth = SignedDistanceToPortal(*probe.exit, newCenter);
-    m_context.cooldownUntil = currentTime + kTeleportCooldown;
+    m_context.cooldownUntil = 0.0f;
     m_context.teleportCommandNumber = cmd ? cmd->command_number : commandNumberOverride;
     m_context.insideAperture = PortalTransform::IsPointInsideAperture(*probe.exit, newCenter, DefaultAperture());
     m_context.movingIntoPortal = false;
@@ -1214,6 +1420,169 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
             m_context.teleportCommandNumber,
             continuityCommit,
             continuityDetails);
+    if (continuityTransactionId != 0)
+    {
+        G::G_L4D2Portal.m_PortalTransition.ArmPortalViewReorientation(
+            continuityTransactionId,
+            newAngles,
+            false);
+    }
+
+    const bool floorWallDiagnostic =
+        PortalTransitionDecision::IsFloorToWallDiagnosticOrientation(
+            probe.entry->normal.z,
+            probe.exit->normal.z);
+    m_floorWallDiagnostic = {};
+    m_hasFloorWallDiagnostic = false;
+    if (floorWallDiagnostic
+        && PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+    {
+        Vector entryForward;
+        Vector entryRight;
+        Vector entryUp;
+        Vector exitForward;
+        Vector exitRight;
+        Vector exitUp;
+        U::Math.AngleVectors(
+            probe.entry->angles,
+            &entryForward,
+            &entryRight,
+            &entryUp);
+        U::Math.AngleVectors(
+            probe.exit->angles,
+            &exitForward,
+            &exitRight,
+            &exitUp);
+
+        PortalFloorWallDiagnosticContext diagnostic;
+        diagnostic.transactionId = continuityTransactionId;
+        diagnostic.committedCommandNumber = m_context.teleportCommandNumber;
+        diagnostic.commitTick = I::GlobalVars ? I::GlobalVars->tickcount : -1;
+        diagnostic.commitTime = currentTime;
+        diagnostic.entrySide = probe.side;
+        diagnostic.exitSide = exitSide;
+        diagnostic.projectedPath = overrideAnchor != nullptr;
+        diagnostic.wasOnGround = wasOnGround;
+        diagnostic.entryPlaneOrigin = probe.entry->origin;
+        diagnostic.entryPlaneNormal = probe.entry->normal;
+        diagnostic.entryRight = entryRight;
+        diagnostic.entryUp = entryUp;
+        diagnostic.exitPlaneOrigin = probe.exit->origin;
+        diagnostic.exitPlaneNormal = probe.exit->normal;
+        diagnostic.exitRight = exitRight;
+        diagnostic.exitUp = exitUp;
+        diagnostic.preOrigin = anchor.origin;
+        diagnostic.preEye = anchor.eye;
+        diagnostic.preVelocity = anchor.velocity;
+        diagnostic.preViewAngles = sourceAngles;
+        diagnostic.committedOrigin = newOrigin;
+        diagnostic.committedEye = finalEye;
+        diagnostic.committedVelocity = newVelocity;
+        diagnostic.committedViewAngles = newAngles;
+        m_floorWallDiagnostic = diagnostic;
+        m_hasFloorWallDiagnostic = true;
+
+        const float preEntryNormalSpeed =
+            anchor.velocity.Dot(diagnostic.entryPlaneNormal);
+        const float postExitNormalSpeed =
+            newVelocity.Dot(diagnostic.exitPlaneNormal);
+        const float postExitRightSpeed =
+            newVelocity.Dot(diagnostic.exitRight);
+        const float postExitUpSpeed =
+            newVelocity.Dot(diagnostic.exitUp);
+        U::LogInfo(
+            "[PortalFloorWallBegin] txn=%u epoch=%u committedCmd=%d tick=%d time=%.6f path=%s entry=%s exit=%s orientation=floor-to-wall entryPlane(origin=(%.3f %.3f %.3f) normal=(%.4f %.4f %.4f) right=(%.4f %.4f %.4f) up=(%.4f %.4f %.4f)) exitPlane(origin=(%.3f %.3f %.3f) normal=(%.4f %.4f %.4f) right=(%.4f %.4f %.4f) up=(%.4f %.4f %.4f)) onGround=%s pre(origin=(%.3f %.3f %.3f) eye=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) speed3D=%.3f entryNormalSpeed=%.3f angles=(%.3f %.3f %.3f)) post(origin=(%.3f %.3f %.3f) eye=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) speed3D=%.3f worldZSpeed=%.3f exitNormalSpeed=%.3f exitRightSpeed=%.3f exitUpSpeed=%.3f angles=(%.3f %.3f %.3f)) diagnosticWindow=commit-through-plus-32 behaviorMutation=false.\n",
+            diagnostic.transactionId,
+            m_context.traversalEpoch,
+            diagnostic.committedCommandNumber,
+            diagnostic.commitTick,
+            diagnostic.commitTime,
+            diagnostic.projectedPath ? "projected" : "live",
+            SideName(diagnostic.entrySide),
+            SideName(diagnostic.exitSide),
+            diagnostic.entryPlaneOrigin.x,
+            diagnostic.entryPlaneOrigin.y,
+            diagnostic.entryPlaneOrigin.z,
+            diagnostic.entryPlaneNormal.x,
+            diagnostic.entryPlaneNormal.y,
+            diagnostic.entryPlaneNormal.z,
+            diagnostic.entryRight.x,
+            diagnostic.entryRight.y,
+            diagnostic.entryRight.z,
+            diagnostic.entryUp.x,
+            diagnostic.entryUp.y,
+            diagnostic.entryUp.z,
+            diagnostic.exitPlaneOrigin.x,
+            diagnostic.exitPlaneOrigin.y,
+            diagnostic.exitPlaneOrigin.z,
+            diagnostic.exitPlaneNormal.x,
+            diagnostic.exitPlaneNormal.y,
+            diagnostic.exitPlaneNormal.z,
+            diagnostic.exitRight.x,
+            diagnostic.exitRight.y,
+            diagnostic.exitRight.z,
+            diagnostic.exitUp.x,
+            diagnostic.exitUp.y,
+            diagnostic.exitUp.z,
+            BoolText(diagnostic.wasOnGround),
+            diagnostic.preOrigin.x,
+            diagnostic.preOrigin.y,
+            diagnostic.preOrigin.z,
+            diagnostic.preEye.x,
+            diagnostic.preEye.y,
+            diagnostic.preEye.z,
+            diagnostic.preVelocity.x,
+            diagnostic.preVelocity.y,
+            diagnostic.preVelocity.z,
+            diagnostic.preVelocity.Lenght(),
+            preEntryNormalSpeed,
+            diagnostic.preViewAngles.x,
+            diagnostic.preViewAngles.y,
+            diagnostic.preViewAngles.z,
+            diagnostic.committedOrigin.x,
+            diagnostic.committedOrigin.y,
+            diagnostic.committedOrigin.z,
+            diagnostic.committedEye.x,
+            diagnostic.committedEye.y,
+            diagnostic.committedEye.z,
+            diagnostic.committedVelocity.x,
+            diagnostic.committedVelocity.y,
+            diagnostic.committedVelocity.z,
+            diagnostic.committedVelocity.Lenght(),
+            diagnostic.committedVelocity.z,
+            postExitNormalSpeed,
+            postExitRightSpeed,
+            postExitUpSpeed,
+            diagnostic.committedViewAngles.x,
+            diagnostic.committedViewAngles.y,
+            diagnostic.committedViewAngles.z);
+    }
+
+    const float secondsSincePreviousCommit = m_hasLastTeleportCommitTime
+        ? std::max(0.0f, currentTime - m_lastTeleportCommitTime)
+        : -1.0f;
+    const float oldSpeed3D = std::sqrt(anchor.velocity.LenghtSqr());
+    const float newSpeed3D = std::sqrt(newVelocity.LenghtSqr());
+    U::LogInfo(
+        "[PortalTraversalCadence] txn=%u epoch=%u cmd=%d time=%.6f sincePreviousCommit=%.6f entry=%s exit=%s onGround=%s flags=0x%X ground=0x%X moveType=%u velocity=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) speed3D=%.3f->%.3f speedDelta=%.6f rearmPhase=ExitingPortal rearmPolicy=spatial-only temporalCooldown=false behaviorMutation=exit-rearm-policy-only.\n",
+        continuityTransactionId,
+        m_context.traversalEpoch,
+        m_context.teleportCommandNumber,
+        currentTime,
+        secondsSincePreviousCommit,
+        SideName(probe.side),
+        SideName(exitSide),
+        BoolText(wasOnGround),
+        player->m_fFlags(),
+        player->m_hGroundEntity().ToInt(),
+        static_cast<unsigned int>(player->m_MoveType()),
+        anchor.velocity.x, anchor.velocity.y, anchor.velocity.z,
+        newVelocity.x, newVelocity.y, newVelocity.z,
+        oldSpeed3D,
+        newSpeed3D,
+        newSpeed3D - oldSpeed3D);
+    m_lastTeleportCommitTime = currentTime;
+    m_hasLastTeleportCommitTime = true;
 
     // Portal's player movement path transforms the command's frame-end center
     // after detecting the plane crossing inside HandlePortalling.  Our current
@@ -1258,6 +1627,11 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
 
     const Vector officialCrossingCommandEndOrigin =
         PortalTransform::TransformPoint(entryToExit, linearFrameEndCenter) + originFromCenter;
+    const Vector officialCommandEndEye =
+        officialCrossingCommandEndOrigin + (finalEye - newOrigin);
+    const float commitSeedPublicationTime = I::EngineClient
+        ? I::EngineClient->OBSOLETE_Time()
+        : currentTime;
     const Vector postCommitCommandEndEstimate =
         newOrigin + newVelocity * commandInterval;
     const Vector officialComparedCommandEndOrigin = projectedPath
@@ -1346,7 +1720,11 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
         m_context.teleportCommandNumber,
         continuityTransactionId,
         projectedPath,
-        projectedHistoryRebaseDelta);
+        projectedHistoryRebaseDelta,
+        floorWallDiagnostic,
+        officialCommandEndEye,
+        newVelocity,
+        commitSeedPublicationTime);
 
     U::LogInfo("[PortalCrossingTransaction] txn=%u entry=%s exit=%s cmd=%d path=%s previousEntryDepth=%.3f currentEntryDepth=%.3f commitEntryDepth=%.3f transformedExitDepth=%.3f finalExitDepth=%.3f hasPrevious=%s swept=%s sweepFraction=%.3f.\n",
         continuityTransactionId,
@@ -1413,6 +1791,37 @@ bool CPortalTransitionSimulator::TryCommitTeleport(
         m_context.teleportCommandNumber,
         PortalTransitionDecision::ExitClearanceModeName(exitClearanceMode),
         m_context.signedDepth);
+
+    if (m_context.teleportCommandNumber > 0)
+    {
+        const float staleEntryDepth = m_hasPreviousAnchor
+            ? SignedDistanceToPortal(*probe.entry, m_previousAnchor.center)
+            : 0.0f;
+        const float rebasedExitDepth = SignedDistanceToPortal(*probe.exit, newCenter);
+        const float nextEntryDepth = SignedDistanceToPortal(*probe.entry, newCenter);
+        PortalPlayerAnchor rebasedAnchor = anchor;
+        rebasedAnchor.origin = newOrigin;
+        rebasedAnchor.eye = finalEye;
+        rebasedAnchor.center = newCenter;
+        rebasedAnchor.feet = newOrigin;
+        rebasedAnchor.velocity = newVelocity;
+        rebasedAnchor.viewAngles = newAngles;
+        m_previousAnchor = rebasedAnchor;
+        m_previousAnchorCommandNumber = m_context.teleportCommandNumber;
+        m_hasPreviousAnchor = true;
+        U::LogInfo(
+            "[PortalTraversalHistoryRebase] txn=%u cmd=%d entry=%s exit=%s staleEntryDepth=%.3f rebasedExitDepth=%.3f nextEntryDepth=%.3f origin=(%.3f %.3f %.3f) center=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) behaviorMutation=history-only.\n",
+            continuityTransactionId,
+            m_context.teleportCommandNumber,
+            SideName(probe.side),
+            SideName(exitSide),
+            staleEntryDepth,
+            rebasedExitDepth,
+            nextEntryDepth,
+            rebasedAnchor.origin.x, rebasedAnchor.origin.y, rebasedAnchor.origin.z,
+            rebasedAnchor.center.x, rebasedAnchor.center.y, rebasedAnchor.center.z,
+            rebasedAnchor.velocity.x, rebasedAnchor.velocity.y, rebasedAnchor.velocity.z);
+    }
 
     m_lastCommittedMovementCommandNumber = m_context.teleportCommandNumber;
     m_lastCommittedMovementOrigin = newOrigin;

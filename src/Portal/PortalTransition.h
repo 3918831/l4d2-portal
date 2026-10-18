@@ -4,6 +4,8 @@
 #include "PortalEyeContinuity.h"
 #include "PortalRenderCadenceTracker.h"
 #include "PortalTransform.h"
+#include "PortalTransitionDecision.h"
+#include "PortalViewReorientation.h"
 
 class C_TerrorPlayer;
 class C_BasePlayer;
@@ -30,7 +32,11 @@ public:
         int commandNumber,
         std::uint32_t transactionId,
         bool projectedPath,
-        const Vector& projectedHistoryRebaseDelta);
+        const Vector& projectedHistoryRebaseDelta,
+        bool floorWallDiagnostic,
+        const Vector& officialCommandEndEye,
+        const Vector& exitVelocity,
+        float publicationTime);
     bool ApplyPortalEyeContinuity(
         C_BasePlayer* player,
         Vector& eyeOrigin,
@@ -39,7 +45,10 @@ public:
         C_BasePlayer* player,
         const Vector& calcViewInputEye,
         const Vector& originalViewEye,
-        const Vector& adaptedViewEye);
+        const Vector& adaptedViewEye,
+        const Vector& calcViewInputAngles,
+        const Vector& originalViewAngles,
+        const Vector& adaptedViewAngles);
     void ApplyVisualTransition(CViewSetup& view);
     void ApplyPortalNearClipFix(CViewSetup& view);
     bool TryGetExactExitVisibilityOrigin(
@@ -63,6 +72,17 @@ public:
     void ArmEnvironmentRenderTrace(int frameCount);
     void ArmToneTransition(const char* reason);
     bool ShouldLogPortalRenderState(const char* phase, int depth) const;
+    void ArmPortalViewReorientation(
+        std::uint32_t transactionId,
+        const QAngle& committedAngles,
+        bool pitchReorientation);
+    void UpdatePortalViewReorientationAtRenderStart();
+    void ResetPortalViewReorientation(const char* reason);
+    void SetPortalVisualCommitSeedEnabled(bool enabled, const char* reason);
+    void SetPortalEyeSingleOwnerEnabled(bool enabled, const char* reason);
+    bool IsPortalViewReorientationActive() const;
+    bool ShouldPreservePortalInputRoll() const;
+    std::uint32_t GetPortalViewReorientationTransactionId() const;
 
     bool ShouldBypassPlayerBBoxTrace(
         const Vector& start,
@@ -160,6 +180,9 @@ private:
         Vector inputEye;
         Vector originalEye;
         Vector adaptedEye;
+        Vector inputAngles;
+        Vector originalAngles;
+        Vector adaptedAngles;
         bool eyeHistoryActive = false;
         bool eyeHistoryReleased = false;
         bool shadowPredictorApplied = false;
@@ -176,11 +199,25 @@ private:
     PortalEyeContinuity::ShadowDiagnosticLogGate m_eyeShadowDiagnosticLogGate;
     PortalRenderCadence::Tracker m_renderCadence;
     RenderCadenceCalcViewObservation m_renderCadenceCalcView;
+    PortalViewReorientation::Controller m_viewReorientation;
+    float m_viewReorientationStartTime = 0.0f;
+    int m_viewReorientationAdvancedFrames = 0;
+    int m_viewReorientationLastRollBucket = 0;
+    bool m_viewReorientationHasRollBucket = false;
+    bool m_viewReorientationLastGrounded = false;
+    bool m_viewReorientationHasGroundState = false;
     std::uint32_t m_eyeContinuityTransactionId = 0;
     int m_eyeContinuityLastCalcViewFrame = -1;
     int m_eyeContinuityCalcViewCallOrdinal = 0;
     bool m_eyeContinuityProjectedPath = false;
     bool m_eyeContinuityHistoryRebaseEnabled = false;
+    PortalEyeContinuity::ShadowRestartSeedInput m_pendingEyeRestartSeed;
+    bool m_lastPortalVisualCommitSeedEnabled = false;
+    bool m_eyeShadowPredictorHasCommitSeed = false;
+    bool m_lastPortalEyeSingleOwnerEnabled = false;
+    bool m_eyeSingleOwnerTransactionActive = false;
+    PortalTransitionDecision::PortalEyeCrossLeafHandoffController
+        m_eyeCrossLeafHandoffController;
     PortalSide m_lastExitPortal = PortalSide::None;
     float m_nextTeleportTime = 0.0f;
     float m_nextStatusLogTime = 0.0f;
@@ -198,7 +235,7 @@ private:
 
     void RecordPortalRenderCadence(
         C_BasePlayer* player,
-        const Vector& finalViewEye);
+        const CViewSetup& finalView);
 
     C_TerrorPlayer* GetLocalPlayer() const;
     bool ArePortalsReady() const;

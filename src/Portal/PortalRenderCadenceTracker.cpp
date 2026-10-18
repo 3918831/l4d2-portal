@@ -19,21 +19,29 @@ void PortalRenderCadence::Tracker::Reset()
     m_networkOriginConsecutiveFrozenFrames = 0;
     m_oldOriginConsecutiveFrozenFrames = 0;
     m_simulationTimeConsecutiveFrozenFrames = 0;
+    m_finalViewAnglesConsecutiveFrozenFrames = 0;
     m_finalViewConsecutiveUnderSpeedFrames = 0;
     m_seenEyeHistoryActive = false;
     m_postEyeHistory = false;
     m_previousFinalViewUnderSpeed = false;
     m_hasPrevious = false;
     m_active = false;
+    m_captureCommandTransitions = kCaptureCommandTransitions;
+    m_maximumFrames = kMaximumFrames;
 }
 
 PortalRenderCadence::BeginResult PortalRenderCadence::Tracker::BeginTransaction(
     std::uint32_t transactionId,
     int committedCommandNumber,
-    const Vec3& exitNormal)
+    const Vec3& exitNormal,
+    int captureCommandTransitions,
+    int maximumFrames)
 {
     BeginResult result;
-    if (transactionId == 0 || committedCommandNumber <= 0)
+    if (transactionId == 0
+        || committedCommandNumber <= 0
+        || captureCommandTransitions <= 0
+        || maximumFrames <= 0)
         return result;
 
     const float normalLength = Length(exitNormal);
@@ -54,6 +62,8 @@ PortalRenderCadence::BeginResult PortalRenderCadence::Tracker::BeginTransaction(
     };
     m_summary.transactionId = transactionId;
     m_summary.committedCommandNumber = committedCommandNumber;
+    m_captureCommandTransitions = captureCommandTransitions;
+    m_maximumFrames = maximumFrames;
     m_active = true;
     result.accepted = true;
     result.transactionId = transactionId;
@@ -116,6 +126,8 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
         result.oldOriginDeltaLength = Length(oldOriginDelta);
         result.simulationTimeDelta =
             sample.simulationTime - m_previous.simulationTime;
+        result.finalViewAngleDeltaLength =
+            AngleDeltaLength(sample.finalViewAngles, m_previous.finalViewAngles);
         result.appliedExitNormalDelta = Dot(appliedDelta, m_exitNormal);
         const float tangentLengthSqr = std::max(
             0.0f,
@@ -231,6 +243,8 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
         result.oldOriginFrozen = result.oldOriginDeltaLength <= kFreezeEpsilon;
         result.simulationTimeFrozen =
             std::fabs(result.simulationTimeDelta) <= kFreezeEpsilon;
+        result.finalViewAnglesFrozen =
+            result.finalViewAngleDeltaLength <= kFreezeEpsilon;
 
         m_rawConsecutiveFrozenFrames = result.rawFrozen
             ? m_rawConsecutiveFrozenFrames + 1
@@ -262,6 +276,9 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
         m_simulationTimeConsecutiveFrozenFrames = result.simulationTimeFrozen
             ? m_simulationTimeConsecutiveFrozenFrames + 1
             : 0;
+        m_finalViewAnglesConsecutiveFrozenFrames = result.finalViewAnglesFrozen
+            ? m_finalViewAnglesConsecutiveFrozenFrames + 1
+            : 0;
         result.rawConsecutiveFrozenFrames = m_rawConsecutiveFrozenFrames;
         result.originalConsecutiveFrozenFrames = m_originalConsecutiveFrozenFrames;
         result.appliedConsecutiveFrozenFrames = m_appliedConsecutiveFrozenFrames;
@@ -278,6 +295,8 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
             m_oldOriginConsecutiveFrozenFrames;
         result.simulationTimeConsecutiveFrozenFrames =
             m_simulationTimeConsecutiveFrozenFrames;
+        result.finalViewAnglesConsecutiveFrozenFrames =
+            m_finalViewAnglesConsecutiveFrozenFrames;
 
         if (result.rawFrozen)
             ++m_summary.rawFrozenFrames;
@@ -299,6 +318,8 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
             ++m_summary.oldOriginFrozenFrames;
         if (result.simulationTimeFrozen)
             ++m_summary.simulationTimeFrozenFrames;
+        if (result.finalViewAnglesFrozen)
+            ++m_summary.finalViewAnglesFrozenFrames;
         m_summary.maxRawConsecutiveFrozenFrames = std::max(
             m_summary.maxRawConsecutiveFrozenFrames,
             m_rawConsecutiveFrozenFrames);
@@ -329,6 +350,9 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
         m_summary.maxSimulationTimeConsecutiveFrozenFrames = std::max(
             m_summary.maxSimulationTimeConsecutiveFrozenFrames,
             m_simulationTimeConsecutiveFrozenFrames);
+        m_summary.maxFinalViewAnglesConsecutiveFrozenFrames = std::max(
+            m_summary.maxFinalViewAnglesConsecutiveFrozenFrames,
+            m_finalViewAnglesConsecutiveFrozenFrames);
         m_summary.maxRawDeltaLength = std::max(
             m_summary.maxRawDeltaLength,
             result.rawDeltaLength);
@@ -359,6 +383,9 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
         m_summary.maxSimulationTimeDelta = std::max(
             m_summary.maxSimulationTimeDelta,
             std::fabs(result.simulationTimeDelta));
+        m_summary.maxFinalViewAngleDeltaLength = std::max(
+            m_summary.maxFinalViewAngleDeltaLength,
+            result.finalViewAngleDeltaLength);
     }
 
     m_previous = sample;
@@ -370,8 +397,8 @@ PortalRenderCadence::RecordResult PortalRenderCadence::Tracker::RecordFrame(
     const int completedTransitions = std::max(
         m_summary.commandTransitions,
         m_summary.tickTransitions);
-    if (completedTransitions >= kCaptureCommandTransitions
-        || m_summary.frameCount >= kMaximumFrames)
+    if (completedTransitions >= m_captureCommandTransitions
+        || m_summary.frameCount >= m_maximumFrames)
     {
         result.completed = true;
         m_active = false;
@@ -394,4 +421,24 @@ float PortalRenderCadence::Tracker::Dot(const Vec3& a, const Vec3& b)
 float PortalRenderCadence::Tracker::Length(const Vec3& value)
 {
     return std::sqrt(Dot(value, value));
+}
+
+float PortalRenderCadence::Tracker::AngleDeltaLength(
+    const Vec3& to,
+    const Vec3& from)
+{
+    const auto normalizedDelta = [](float value)
+    {
+        while (value > 180.0f)
+            value -= 360.0f;
+        while (value < -180.0f)
+            value += 360.0f;
+        return value;
+    };
+    const Vec3 delta = {
+        normalizedDelta(to.x - from.x),
+        normalizedDelta(to.y - from.y),
+        normalizedDelta(to.z - from.z)
+    };
+    return Length(delta);
 }

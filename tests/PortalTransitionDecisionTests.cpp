@@ -33,14 +33,216 @@ int main()
         PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
         "the validated one-tick shadow predictor must be enabled by default");
     Expect(
+        PortalTransitionDecision::GetPortalVisualCommitSeedEnabled(),
+        "the verified first-render official command-end eye seed must default on");
+    const PortalVisualCommitSeedEdgeAction unchangedCommitSeedEdge =
+        PortalTransitionDecision::DecidePortalVisualCommitSeedEdgeAction(
+            false,
+            false);
+    Expect(!unchangedCommitSeedEdge.changed
+            && !unchangedCommitSeedEdge.clearPendingSeed
+            && !unchangedCommitSeedEdge.clearSeedDerivedPredictor,
+        "an unchanged commit-seed decision must not disturb pending or predictor state");
+    const PortalVisualCommitSeedEdgeAction enabledCommitSeedEdge =
+        PortalTransitionDecision::DecidePortalVisualCommitSeedEdgeAction(
+            false,
+            true);
+    Expect(enabledCommitSeedEdge.changed
+            && enabledCommitSeedEdge.clearPendingSeed
+            && !enabledCommitSeedEdge.clearSeedDerivedPredictor,
+        "an enable edge must discard stale pending metadata without resetting an unrelated predictor");
+    const PortalVisualCommitSeedEdgeAction disabledCommitSeedEdge =
+        PortalTransitionDecision::DecidePortalVisualCommitSeedEdgeAction(
+            true,
+            false);
+    Expect(disabledCommitSeedEdge.changed
+            && disabledCommitSeedEdge.clearPendingSeed
+            && disabledCommitSeedEdge.clearSeedDerivedPredictor,
+        "a disable edge must clear pending metadata and any seed-derived predictor state");
+    Expect(
         PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
         "the validated shadow release tail must be enabled by default");
+    Expect(
+        !PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled(),
+        "single eye-history ownership must default off for controlled A/B testing");
+    const PortalEyeSingleOwnerEdgeAction singleOwnerEnableEdge =
+        PortalTransitionDecision::DecidePortalEyeSingleOwnerEdgeAction(
+            false,
+            true);
+    Expect(singleOwnerEnableEdge.changed
+            && singleOwnerEnableEdge.resetEyeHistoryState
+            && singleOwnerEnableEdge.resetShadowState
+            && singleOwnerEnableEdge.clearPendingSeed
+            && singleOwnerEnableEdge.resetTransactionVisualState,
+        "enabling single-owner mode must atomically clear both old owners and pending seed metadata");
+    const PortalEyeSingleOwnerEdgeAction singleOwnerDisableEdge =
+        PortalTransitionDecision::DecidePortalEyeSingleOwnerEdgeAction(
+            true,
+            false);
+    Expect(singleOwnerDisableEdge.changed
+            && singleOwnerDisableEdge.resetEyeHistoryState
+            && singleOwnerDisableEdge.resetShadowState
+            && singleOwnerDisableEdge.clearPendingSeed
+            && singleOwnerDisableEdge.resetTransactionVisualState,
+        "returning to the fixed-shadow control must clear the same visual ownership");
+    const PortalEyeSingleOwnerEdgeAction singleOwnerNoChange =
+        PortalTransitionDecision::DecidePortalEyeSingleOwnerEdgeAction(
+            false,
+            false);
+    Expect(!singleOwnerNoChange.changed
+            && !singleOwnerNoChange.resetEyeHistoryState
+            && !singleOwnerNoChange.resetShadowState
+            && !singleOwnerNoChange.clearPendingSeed
+            && !singleOwnerNoChange.resetTransactionVisualState,
+        "repeating the current single-owner setting must not reset visual state");
+    PortalTransitionDecision::SetPortalEyeSingleOwnerEnabled(true);
+    Expect(PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled(),
+        "the single-owner factor must expose an enabled experiment path");
+    PortalTransitionDecision::SetPortalEyeSingleOwnerEnabled(false);
+    Expect(!PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled(),
+        "the single-owner factor must restore its default-off control path");
+    Expect(
+        PortalTransitionDecision::ShouldFailClosedForMissingPortalEyeSafetyInterface(
+            true,
+            false),
+        "an active custom eye candidate must fail closed when the trace safety interface is unavailable");
+    Expect(
+        !PortalTransitionDecision::ShouldFailClosedForMissingPortalEyeSafetyInterface(
+            false,
+            false),
+        "an inactive custom eye path must not invent a safety fallback");
+    Expect(
+        !PortalTransitionDecision::ShouldFailClosedForMissingPortalEyeSafetyInterface(
+            true,
+            true),
+        "an available trace interface must continue into the existing per-frame spatial gates");
+    Expect(
+        PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+            true, 1.0f, false, false, true,
+            true, 1.0f, false, false, true),
+        "two available full finite traces must pass the per-frame eye-candidate trace gate");
+    Expect(
+        !PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+            false, 1.0f, false, false, true,
+            true, 1.0f, false, false, true),
+        "a missing forward trace must fail closed even when candidate and original share a leaf");
+    Expect(
+        !PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+            true, 0.5f, false, false, true,
+            true, 1.0f, false, false, true),
+        "a partial trace must reject the candidate on every output frame");
+    Expect(
+        !PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+            true, 1.0f, true, false, true,
+            true, 1.0f, false, false, true),
+        "start-solid trace evidence must reject the candidate");
+    Expect(
+        !PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+            true, 1.0f, false, false, false,
+            true, 1.0f, false, false, true),
+        "a non-finite trace end must fail closed");
     Expect(
         PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled(),
         "the validated projected eye-history rebase must be enabled by default");
     Expect(
         PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled(),
         "focused transaction diagnostics must default on during continuity testing");
+    Expect(PortalTransitionDecision::GetPortalViewReorientationEnabled(),
+        "verified official view reorientation must default on");
+    PortalTransitionDecision::SetPortalViewReorientationEnabled(false);
+    Expect(!PortalTransitionDecision::GetPortalViewReorientationEnabled(),
+        "official view reorientation must remain independently disableable");
+    PortalTransitionDecision::SetPortalViewReorientationEnabled(true);
+    Expect(PortalTransitionDecision::GetPortalViewReorientationEnabled(),
+        "official view reorientation must round-trip to its verified default-on path");
+    Expect(PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled(),
+        "the game-validated safe cross-leaf eye handoff baseline must default on");
+    for (int enabled = 0; enabled <= 1; ++enabled)
+    {
+        for (int leafMismatch = 0; leafMismatch <= 1; ++leafMismatch)
+        {
+            for (int geometryClear = 0; geometryClear <= 1; ++geometryClear)
+            {
+                const bool expected = enabled != 0
+                    && leafMismatch != 0
+                    && geometryClear != 0;
+                Expect(
+                    PortalTransitionDecision::ShouldAllowPortalEyeCrossLeafHandoff(
+                        enabled != 0,
+                        leafMismatch != 0,
+                        geometryClear != 0) == expected,
+                    "safe cross-leaf eye handoff must require all three gates");
+            }
+        }
+    }
+    PortalTransitionDecision::SetPortalEyeCrossLeafHandoffEnabled(true);
+    Expect(PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled(),
+        "safe cross-leaf eye handoff must expose an enabled experiment path");
+    PortalTransitionDecision::SetPortalEyeCrossLeafHandoffEnabled(true);
+
+    PortalTransitionDecision::PortalEyeCrossLeafHandoffController handoffController;
+    const PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision firstSafeMismatch =
+        handoffController.EvaluateFrame(true, true, true, false);
+    Expect(firstSafeMismatch.allowCandidate
+            && firstSafeMismatch.emitAllowEdge
+            && !firstSafeMismatch.emitRejectEdge
+            && handoffController.IsAuthorized(),
+        "the first safe mismatch must authorize and emit one allow edge");
+
+    const PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision repeatedSafeMismatch =
+        handoffController.EvaluateFrame(true, true, true, false);
+    Expect(repeatedSafeMismatch.allowCandidate
+            && !repeatedSafeMismatch.emitAllowEdge
+            && !repeatedSafeMismatch.emitRejectEdge
+            && handoffController.IsAuthorized(),
+        "a repeated safe mismatch must re-authorize without repeating the allow edge");
+
+    Expect(handoffController.ConsumeHorizonExpiryProbeEdge(true, true, true),
+        "a diagnostics-enabled horizon-expiry edge must emit one probe");
+    Expect(!handoffController.ConsumeHorizonExpiryProbeEdge(true, true, true),
+        "the same transaction must not repeat the horizon-expiry probe edge");
+    Expect(handoffController.IsAuthorized(),
+        "read-only horizon evidence must not change cross-leaf authorization");
+
+    const PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision unsafeMismatch =
+        handoffController.EvaluateFrame(true, true, false, false);
+    Expect(!unsafeMismatch.allowCandidate
+            && !unsafeMismatch.emitAllowEdge
+            && unsafeMismatch.emitRejectEdge
+            && !handoffController.IsAuthorized(),
+        "an unsafe mismatch after authorization must reject once and clear authorization");
+    const PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision repeatedUnsafeMismatch =
+        handoffController.EvaluateFrame(true, true, false, false);
+    Expect(!repeatedUnsafeMismatch.emitRejectEdge,
+        "a cleared authorization must not repeat the rejection edge");
+
+    handoffController.Reset();
+    handoffController.EvaluateFrame(true, true, true, false);
+    const PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision runtimeSafetyFailure =
+        handoffController.EvaluateFrame(true, false, false, true);
+    Expect(runtimeSafetyFailure.emitRejectEdge
+            && !runtimeSafetyFailure.allowCandidate
+            && !handoffController.IsAuthorized(),
+        "any later runtime safety failure must reject and clear authorization");
+
+    PortalTransitionDecision::PortalEyeCrossLeafHandoffController gatedProbeController;
+    Expect(!gatedProbeController.ConsumeHorizonExpiryProbeEdge(false, true, true),
+        "diagnostics-off horizon expiry must not emit a probe");
+    Expect(!gatedProbeController.ConsumeHorizonExpiryProbeEdge(true, false, true),
+        "a non-ended release tail must not emit a horizon probe");
+    Expect(!gatedProbeController.ConsumeHorizonExpiryProbeEdge(true, true, false),
+        "a non-horizon tail end must not emit a horizon probe");
+    Expect(gatedProbeController.ConsumeHorizonExpiryProbeEdge(true, true, true),
+        "failed probe gates must not consume the later valid horizon edge");
+    gatedProbeController.Reset();
+    Expect(gatedProbeController.ConsumeHorizonExpiryProbeEdge(true, true, true),
+        "transaction cleanup must re-arm the next transaction's probe edge");
+
+    PortalTransitionDecision::PortalEyeCrossLeafHandoffController cleanupController;
+    cleanupController.EvaluateFrame(true, true, true, false);
+    cleanupController.Reset();
+    Expect(!cleanupController.IsAuthorized(),
+        "transaction cleanup must clear cross-leaf authorization");
     Expect(
         PortalTransitionDecision::GetGroundLiveCommitEnabled(),
         "the validated ground live-commit path must be enabled by default");
@@ -164,6 +366,43 @@ int main()
     Expect(
         !PortalTransitionDecision::ShouldCommitPlaneCrossing(0.50f, -0.25f, true, true, false),
         "a crossing while moving away from the portal must not commit");
+
+    Expect(
+        PortalTransitionDecision::ShouldCommitExitRearmCatchup(
+            false,
+            59.827f,
+            -14.841f,
+            true,
+            true,
+            true),
+        "a swept crossing of the opposite portal must commit on the command that releases the exit lock");
+    Expect(
+        !PortalTransitionDecision::ShouldCommitExitRearmCatchup(
+            true,
+            59.827f,
+            -14.841f,
+            true,
+            true,
+            true),
+        "exit rearm catch-up must not immediately re-enter the portal that was just exited");
+    Expect(
+        !PortalTransitionDecision::ShouldCommitExitRearmCatchup(
+            false,
+            -67.111f,
+            -14.841f,
+            true,
+            true,
+            true),
+        "exit rearm catch-up must reject stale entry-space history that never swept the next portal plane");
+    Expect(
+        !PortalTransitionDecision::ShouldCommitExitRearmCatchup(
+            false,
+            59.827f,
+            -14.841f,
+            false,
+            true,
+            true),
+        "exit rearm catch-up must require a consecutive exit-space history sample");
 
     float crossingFraction = 0.0f;
     Expect(
@@ -320,15 +559,6 @@ int main()
     Expect(
         !PortalTransitionDecision::ShouldAllowTraversalEntry(PortalTransitionPhase::ExitingPortal, 2.00f, 1.20f),
         "the spatial exit-rearm lock must block entry even after the old cooldown timestamp expires");
-    ExpectNear(
-        PortalTransitionDecision::ComputeExitRearmCooldownUntil(5.00f, 0.20f),
-        5.20f,
-        "the temporal rearm guard must start when spatial exit clearance releases");
-    ExpectNear(
-        PortalTransitionDecision::ComputeExitRearmCooldownUntil(5.00f, -0.20f),
-        5.00f,
-        "a negative cooldown duration must not move the rearm timestamp backward");
-
     Expect(
         PortalTransitionDecision::ShouldSyncCommittedViewAnglesAtPredictionSetup(
             PortalTransitionPhase::ExitingPortal, 1521, 1521),
@@ -456,6 +686,20 @@ int main()
     Expect(
         PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
         "the shadow predictor control path must restore the continuity baseline");
+    Expect(
+        PortalTransitionDecision::GetPortalVisualCommitSeedEnabled(),
+        "changing the shadow predictor must not disable the verified commit-seed factor");
+    PortalTransitionDecision::SetPortalVisualCommitSeedEnabled(false);
+    Expect(
+        !PortalTransitionDecision::GetPortalVisualCommitSeedEnabled(),
+        "the commit-seed factor must support an independent disabled path");
+    Expect(
+        PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+        "enabling the commit seed must not alter the shadow-predictor factor");
+    PortalTransitionDecision::SetPortalVisualCommitSeedEnabled(true);
+    Expect(
+        PortalTransitionDecision::GetPortalVisualCommitSeedEnabled(),
+        "the commit-seed factor must round-trip to its verified default-on path");
 
     Expect(
         PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
@@ -489,6 +733,23 @@ int main()
     Expect(
         !PortalTransitionDecision::IsPortalPredictionDiagnosticCommandDelta(2),
         "commands beyond the first authoritative command must stay outside the stabilized window");
+    Expect(
+        PortalTransitionDecision::IsFloorToWallDiagnosticOrientation(0.99f, 0.01f),
+        "a near-horizontal entry and near-vertical exit must arm the floor-to-wall diagnostic");
+    Expect(
+        !PortalTransitionDecision::IsFloorToWallDiagnosticOrientation(0.01f, 0.99f),
+        "the reverse wall-to-floor direction must remain outside the focused diagnostic");
+    Expect(
+        !PortalTransitionDecision::IsFloorToWallDiagnosticOrientation(0.99f, 0.75f),
+        "a sloped exit that is not wall-like must remain outside the focused diagnostic");
+    Expect(
+        PortalTransitionDecision::IsFloorToWallDiagnosticCommandDelta(0)
+            && PortalTransitionDecision::IsFloorToWallDiagnosticCommandDelta(32),
+        "the delayed floor-to-wall diagnostic must retain commit through command plus thirty-two");
+    Expect(
+        !PortalTransitionDecision::IsFloorToWallDiagnosticCommandDelta(-1)
+            && !PortalTransitionDecision::IsFloorToWallDiagnosticCommandDelta(33),
+        "the delayed floor-to-wall diagnostic must reject commands outside its bounded window");
     Expect(
         PortalTransitionDecision::IsWithinGModWallPortalBounds(16.5f, 0.0f, 0.0f),
         "GMod wall portal bounds accepts a centered player close to the portal plane");

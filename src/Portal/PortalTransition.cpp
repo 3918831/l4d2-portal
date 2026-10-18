@@ -1,7 +1,10 @@
 #include "PortalTransition.h"
+#include "PortalNativeDiagnostics.h"
 #include "PortalPhysicsMode.h"
 #include "PortalBspCollisionCarver.h"
+#include "PortalEyeLeafHandoffDiagnostics.h"
 #include "PortalTransitionDecision.h"
+#include "../Hooks/Input/InputAngles.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -118,12 +121,17 @@ namespace
         return { value.x, value.y, value.z };
     }
 
+    Vector FromRenderCadenceVec3(const PortalRenderCadence::Vec3& value)
+    {
+        return Vector(value.x, value.y, value.z);
+    }
+
     void LogRenderCadenceSummary(
         const char* reason,
         const PortalRenderCadence::Summary& summary)
     {
         U::LogInfo(
-            "[PortalRenderCadenceSummary] txn=%u committedCmd=%d reason=%s frames=%d commandTransitions=%d tickTransitions=%d frozen(calcInput=%d raw=%d original=%d adapter=%d final=%d abs=%d render=%d network=%d old=%d simTime=%d) maxFrozenRun(calcInput=%d raw=%d original=%d adapter=%d final=%d abs=%d render=%d network=%d old=%d simTime=%d) maxDelta(calcInput=%.3f raw=%.3f original=%.3f adapter=%.3f final=%.3f abs=%.3f render=%.3f network=%.3f old=%.3f simTime=%.6f) speed(samples=%d historyFrames=%d shadowFrames=%d postHistoryFrames=%d underFrames=%d historyUnder=%d postHistoryUnder=%d maxUnderRun=%d finalRatio=%.3f/%.3f/%.3f adapterRatio=%.3f/%.3f/%.3f threshold=%.3f) behaviorMutation=false.\n",
+            "[PortalRenderCadenceSummary] txn=%u committedCmd=%d reason=%s frames=%d commandTransitions=%d tickTransitions=%d frozen(calcInput=%d raw=%d original=%d adapter=%d final=%d finalAngles=%d abs=%d render=%d network=%d old=%d simTime=%d) maxFrozenRun(calcInput=%d raw=%d original=%d adapter=%d final=%d finalAngles=%d abs=%d render=%d network=%d old=%d simTime=%d) maxDelta(calcInput=%.3f raw=%.3f original=%.3f adapter=%.3f final=%.3f finalAngles=%.3f abs=%.3f render=%.3f network=%.3f old=%.3f simTime=%.6f) speed(samples=%d historyFrames=%d shadowFrames=%d postHistoryFrames=%d underFrames=%d historyUnder=%d postHistoryUnder=%d maxUnderRun=%d finalRatio=%.3f/%.3f/%.3f adapterRatio=%.3f/%.3f/%.3f threshold=%.3f) behaviorMutation=false.\n",
             summary.transactionId,
             summary.committedCommandNumber,
             reason ? reason : "unknown",
@@ -135,6 +143,7 @@ namespace
             summary.originalFrozenFrames,
             summary.appliedFrozenFrames,
             summary.finalViewFrozenFrames,
+            summary.finalViewAnglesFrozenFrames,
             summary.originFrozenFrames,
             summary.renderOriginFrozenFrames,
             summary.networkOriginFrozenFrames,
@@ -145,6 +154,7 @@ namespace
             summary.maxOriginalConsecutiveFrozenFrames,
             summary.maxAppliedConsecutiveFrozenFrames,
             summary.maxFinalViewConsecutiveFrozenFrames,
+            summary.maxFinalViewAnglesConsecutiveFrozenFrames,
             summary.maxOriginConsecutiveFrozenFrames,
             summary.maxRenderOriginConsecutiveFrozenFrames,
             summary.maxNetworkOriginConsecutiveFrozenFrames,
@@ -155,6 +165,7 @@ namespace
             summary.maxOriginalDeltaLength,
             summary.maxAppliedDeltaLength,
             summary.maxFinalViewDeltaLength,
+            summary.maxFinalViewAngleDeltaLength,
             summary.maxOriginDeltaLength,
             summary.maxRenderOriginDeltaLength,
             summary.maxNetworkOriginDeltaLength,
@@ -279,10 +290,103 @@ namespace
         snapshot.available = true;
         return snapshot;
     }
+
+    PortalEyeLeafHandoffDiagnostics::Vec3 ToLeafHandoffVec3(
+        const Vector& value)
+    {
+        return { value.x, value.y, value.z };
+    }
+
+    PortalEyeLeafHandoffDiagnostics::PointSnapshot ToLeafHandoffPointSnapshot(
+        const Vector& point,
+        const EyeSafetySnapshot& safety)
+    {
+        PortalEyeLeafHandoffDiagnostics::PointSnapshot snapshot;
+        snapshot.point = ToLeafHandoffVec3(point);
+        snapshot.leaf = safety.leaf;
+        snapshot.worldContents = safety.worldContents;
+        snapshot.playerSolidContents = safety.playerSolidContents;
+        snapshot.outsideWorld = safety.outsideWorld;
+        snapshot.available = safety.available;
+        return snapshot;
+    }
+
+    PortalEyeLeafHandoffDiagnostics::TraceSnapshot ToLeafHandoffTraceSnapshot(
+        const trace_t& trace,
+        bool available)
+    {
+        PortalEyeLeafHandoffDiagnostics::TraceSnapshot snapshot;
+        snapshot.endPosition = ToLeafHandoffVec3(trace.endpos);
+        snapshot.fraction = trace.fraction;
+        snapshot.startSolid = trace.startsolid;
+        snapshot.allSolid = trace.allsolid;
+        snapshot.available = available;
+        return snapshot;
+    }
+
+    struct EyeLeafHandoffGeometrySnapshot
+    {
+        EyeSafetySnapshot originalSafety;
+        PortalEyeLeafHandoffDiagnostics::EvaluationInput input;
+        PortalEyeLeafHandoffDiagnostics::EvaluationResult result;
+    };
+
+    EyeLeafHandoffGeometrySnapshot CaptureEyeLeafHandoffGeometrySnapshot(
+        const Vector& candidateEye,
+        const EyeSafetySnapshot& candidateSafety,
+        const Vector& originalEye)
+    {
+        EyeLeafHandoffGeometrySnapshot snapshot;
+        snapshot.originalSafety = CaptureEyeSafetySnapshot(originalEye);
+
+        trace_t originalToCandidateTrace = {};
+        trace_t candidateToOriginalTrace = {};
+        bool originalToCandidateTraceAvailable = false;
+        bool candidateToOriginalTraceAvailable = false;
+        if (I::EngineTrace
+            && IsFiniteVector(candidateEye)
+            && IsFiniteVector(originalEye))
+        {
+            CTraceFilterWorldAndPropsOnly filter;
+            Ray_t originalToCandidateRay;
+            originalToCandidateRay.Init(originalEye, candidateEye);
+            I::EngineTrace->TraceRay(
+                originalToCandidateRay,
+                MASK_PLAYERSOLID,
+                &filter,
+                &originalToCandidateTrace);
+            originalToCandidateTraceAvailable = true;
+
+            Ray_t candidateToOriginalRay;
+            candidateToOriginalRay.Init(candidateEye, originalEye);
+            I::EngineTrace->TraceRay(
+                candidateToOriginalRay,
+                MASK_PLAYERSOLID,
+                &filter,
+                &candidateToOriginalTrace);
+            candidateToOriginalTraceAvailable = true;
+        }
+
+        snapshot.input.candidate =
+            ToLeafHandoffPointSnapshot(candidateEye, candidateSafety);
+        snapshot.input.original =
+            ToLeafHandoffPointSnapshot(originalEye, snapshot.originalSafety);
+        snapshot.input.originalToCandidate = ToLeafHandoffTraceSnapshot(
+            originalToCandidateTrace,
+            originalToCandidateTraceAvailable);
+        snapshot.input.candidateToOriginal = ToLeafHandoffTraceSnapshot(
+            candidateToOriginalTrace,
+            candidateToOriginalTraceAvailable);
+        snapshot.result = PortalEyeLeafHandoffDiagnostics::Evaluate(
+            snapshot.input);
+        return snapshot;
+    }
 }
 
 void CPortalTransition::Reset()
 {
+    PortalNativeDiagnostics::Reset("portal-transition-reset");
+    ResetPortalViewReorientation("portal-transition-reset");
     RestoreControlledMoveType(GetLocalPlayer(), "portal-transition-reset");
     m_blueState = {};
     m_orangeState = {};
@@ -299,6 +403,14 @@ void CPortalTransition::Reset()
     m_eyeContinuityCalcViewCallOrdinal = 0;
     m_eyeContinuityProjectedPath = false;
     m_eyeContinuityHistoryRebaseEnabled = false;
+    m_pendingEyeRestartSeed = {};
+    m_lastPortalVisualCommitSeedEnabled =
+        PortalTransitionDecision::GetPortalVisualCommitSeedEnabled();
+    m_eyeShadowPredictorHasCommitSeed = false;
+    m_lastPortalEyeSingleOwnerEnabled =
+        PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled();
+    m_eyeSingleOwnerTransactionActive = false;
+    m_eyeCrossLeafHandoffController.Reset();
     m_lastExitPortal = PortalSide::None;
     m_nextTeleportTime = 0.0f;
     m_nextCrossingLogTime = 0.0f;
@@ -310,6 +422,287 @@ void CPortalTransition::Reset()
     m_pendingEnvironmentRenderFrames = 0;
 }
 
+void CPortalTransition::ArmPortalViewReorientation(
+    std::uint32_t transactionId,
+    const QAngle& committedAngles,
+    bool pitchReorientation)
+{
+    if (pitchReorientation)
+    {
+        U::LogError("[PortalViewReorientationBegin] txn=%u angles=(%.3f %.3f %.3f) requestedMode=pitch accepted=false reason=unsupported-pitch-reorientation scope=view-angles-only physicsMutation=false curve=%s timeScale=%.3f.\n",
+            transactionId,
+            committedAngles.x,
+            committedAngles.y,
+            committedAngles.z,
+            PortalViewReorientation::GetCurveName(),
+            PortalViewReorientation::GetTimeScale());
+        return;
+    }
+
+    const bool priorActive = m_viewReorientation.IsActive();
+    const float priorRate = m_viewReorientation.GetRate();
+    PortalViewReorientation::ArmRequest request;
+    request.transactionId = transactionId;
+    request.committedAngles.pitch = committedAngles.x;
+    request.committedAngles.yaw = committedAngles.y;
+    request.committedAngles.roll = committedAngles.z;
+    request.mode = PortalViewReorientation::Mode::Roll;
+    if (!m_viewReorientation.Arm(request))
+    {
+        U::LogError("[PortalViewReorientationBegin] txn=%u angles=(%.3f %.3f %.3f) mode=roll priorActive=%s priorRate=%.3f accepted=false reason=invalid-arm-request scope=view-angles-only physicsMutation=false curve=%s timeScale=%.3f.\n",
+            transactionId,
+            committedAngles.x,
+            committedAngles.y,
+            committedAngles.z,
+            BoolText(priorActive),
+            priorRate,
+            PortalViewReorientation::GetCurveName(),
+            PortalViewReorientation::GetTimeScale());
+        return;
+    }
+
+    m_viewReorientationStartTime = I::GlobalVars
+        ? I::GlobalVars->curtime
+        : 0.0f;
+    m_viewReorientationAdvancedFrames = 0;
+    m_viewReorientationHasRollBucket = false;
+    m_viewReorientationHasGroundState = false;
+    U::LogInfo("[PortalViewReorientationBegin] txn=%u angles=(%.3f %.3f %.3f) mode=roll priorActive=%s priorRate=%.3f accepted=true scope=view-angles-only physicsMutation=false curve=%s timeScale=%.3f.\n",
+        transactionId,
+        committedAngles.x,
+        committedAngles.y,
+        committedAngles.z,
+        BoolText(priorActive),
+        priorRate,
+        PortalViewReorientation::GetCurveName(),
+        PortalViewReorientation::GetTimeScale());
+}
+
+void CPortalTransition::UpdatePortalViewReorientationAtRenderStart()
+{
+    if (!PortalTransitionDecision::GetPortalViewReorientationEnabled()
+        || !Hooks::InputAngles::IsSignatureValidated()
+        || !Hooks::InputAngles::IsAbiValidated()
+        || !I::EngineClient
+        || !I::GlobalVars)
+    {
+        return;
+    }
+
+    C_TerrorPlayer* player = GetLocalPlayer();
+    if (!player)
+    {
+        if (m_viewReorientation.IsActive())
+            ResetPortalViewReorientation("local-player-unavailable-or-dead");
+        return;
+    }
+
+    Vector liveAngles;
+    I::EngineClient->GetViewAngles(liveAngles);
+    const bool grounded = (player->m_fFlags() & FL_ONGROUND) != 0;
+    PortalViewReorientation::FrameInput input;
+    input.frameCount = I::GlobalVars->framecount;
+    input.frameTime = I::GlobalVars->frametime;
+    input.onGround = grounded;
+    input.liveAngles.pitch = liveAngles.x;
+    input.liveAngles.yaw = liveAngles.y;
+    input.liveAngles.roll = liveAngles.z;
+
+    const std::uint32_t activeTransactionId =
+        m_viewReorientation.GetTransactionId();
+    const PortalViewReorientation::FrameResult result =
+        m_viewReorientation.Advance(input);
+    if (!result.advanced)
+        return;
+
+    Vector nextAngles(
+        result.angles.pitch,
+        result.angles.yaw,
+        result.angles.roll);
+    I::EngineClient->SetViewAngles(nextAngles);
+    ++m_viewReorientationAdvancedFrames;
+
+    const int rollBucket = static_cast<int>(std::floor(result.angles.roll));
+    const bool rollBucketChanged = !m_viewReorientationHasRollBucket
+        || rollBucket != m_viewReorientationLastRollBucket;
+    const bool groundStateChanged = !m_viewReorientationHasGroundState
+        || grounded != m_viewReorientationLastGrounded;
+    if (rollBucketChanged || groundStateChanged)
+    {
+        U::LogInfo("[PortalViewReorientationFrame] txn=%u frame=%d roll=%.3f bucket=%d rate=%.3f grounded=%s upZ=%.4f edge(rollBucket=%s ground=%s) scope=view-angles-only physicsMutation=false.\n",
+            activeTransactionId,
+            input.frameCount,
+            result.angles.roll,
+            rollBucket,
+            result.rate,
+            BoolText(grounded),
+            result.upZ,
+            BoolText(rollBucketChanged),
+            BoolText(groundStateChanged));
+        m_viewReorientationLastRollBucket = rollBucket;
+        m_viewReorientationHasRollBucket = true;
+        m_viewReorientationLastGrounded = grounded;
+        m_viewReorientationHasGroundState = true;
+    }
+
+    if (result.completed)
+    {
+        const float elapsed = std::max(
+            0.0f,
+            I::GlobalVars->curtime - m_viewReorientationStartTime);
+        U::LogInfo("[PortalViewReorientationEnd] txn=%u frame=%d angles=(%.3f %.3f %.3f) rate=%.3f elapsed=%.6f advancedFrames=%d scope=view-angles-only physicsMutation=false curve=%s timeScale=%.3f.\n",
+            activeTransactionId,
+            input.frameCount,
+            result.angles.pitch,
+            result.angles.yaw,
+            result.angles.roll,
+            result.rate,
+            elapsed,
+            m_viewReorientationAdvancedFrames,
+            PortalViewReorientation::GetCurveName(),
+            PortalViewReorientation::GetTimeScale());
+    }
+}
+
+void CPortalTransition::ResetPortalViewReorientation(const char* reason)
+{
+    const bool wasActive = m_viewReorientation.IsActive();
+    const std::uint32_t transactionId = m_viewReorientation.GetTransactionId();
+    const float roll = m_viewReorientation.GetCurrentRoll();
+    const float rate = m_viewReorientation.GetRate();
+    m_viewReorientation.Reset();
+    m_viewReorientationStartTime = 0.0f;
+    m_viewReorientationAdvancedFrames = 0;
+    m_viewReorientationLastRollBucket = 0;
+    m_viewReorientationHasRollBucket = false;
+    m_viewReorientationLastGrounded = false;
+    m_viewReorientationHasGroundState = false;
+
+    if (wasActive || transactionId != 0)
+    {
+        U::LogInfo("[PortalViewReorientationReset] txn=%u reason=%s priorActive=%s roll=%.3f rate=%.3f scope=view-angles-only physicsMutation=false.\n",
+            transactionId,
+            reason ? reason : "unknown",
+            BoolText(wasActive),
+            roll,
+            rate);
+    }
+}
+
+bool CPortalTransition::IsPortalViewReorientationActive() const
+{
+    return m_viewReorientation.IsActive();
+}
+
+bool CPortalTransition::ShouldPreservePortalInputRoll() const
+{
+    return m_viewReorientation.IsActive() && GetLocalPlayer() != nullptr;
+}
+
+std::uint32_t CPortalTransition::GetPortalViewReorientationTransactionId() const
+{
+    return m_viewReorientation.GetTransactionId();
+}
+
+void CPortalTransition::SetPortalVisualCommitSeedEnabled(
+    bool enabled,
+    const char* reason)
+{
+    const PortalVisualCommitSeedEdgeAction action =
+        PortalTransitionDecision::DecidePortalVisualCommitSeedEdgeAction(
+            m_lastPortalVisualCommitSeedEnabled,
+            enabled);
+    const bool hadCandidate = m_pendingEyeRestartSeed.candidate;
+    const std::uint32_t transactionId =
+        m_pendingEyeRestartSeed.transactionId;
+    PortalTransitionDecision::SetPortalVisualCommitSeedEnabled(enabled);
+    if (action.clearPendingSeed)
+        m_pendingEyeRestartSeed = {};
+
+    const bool resetSeedDerivedPredictor =
+        action.clearSeedDerivedPredictor
+        && m_eyeShadowPredictorHasCommitSeed;
+    if (resetSeedDerivedPredictor)
+    {
+        m_eyeShadowPredictor.Reset();
+        m_eyeShadowDiagnosticLogGate.Reset();
+        m_eyeShadowPredictorHasCommitSeed = false;
+    }
+    m_lastPortalVisualCommitSeedEnabled = enabled;
+
+    if (action.changed)
+    {
+        PortalNativeDiagnostics::Reset("commit-seed-mode-switch");
+        U::LogInfo(
+            "[PortalEyeCommitSeedDecision] txn=%u reason=%s enabled=%s clearPending=%s hadPending=%s clearSeedDerivedPredictor=%s predictorReset=%s scope=first-render-eye-only physicsMutation=false.\n",
+            transactionId,
+            reason ? reason : "unknown",
+            BoolText(enabled),
+            BoolText(action.clearPendingSeed),
+            BoolText(hadCandidate),
+            BoolText(action.clearSeedDerivedPredictor),
+            BoolText(resetSeedDerivedPredictor));
+    }
+}
+
+void CPortalTransition::SetPortalEyeSingleOwnerEnabled(
+    bool enabled,
+    const char* reason)
+{
+    const bool wasEnabled =
+        PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled();
+    const PortalEyeSingleOwnerEdgeAction action =
+        PortalTransitionDecision::DecidePortalEyeSingleOwnerEdgeAction(
+            wasEnabled,
+            enabled);
+    if (!action.changed)
+        return;
+
+    const std::uint32_t transactionId = m_eyeContinuityTransactionId;
+    const bool ownerWasActive = m_eyeSingleOwnerTransactionActive;
+    if (action.resetEyeHistoryState)
+        m_eyeContinuity.Reset();
+    if (action.resetShadowState)
+    {
+        m_eyeShadowPredictor.Reset();
+        m_eyeShadowDiagnosticLogGate.Reset();
+        m_eyeShadowPredictorHasCommitSeed = false;
+    }
+    if (action.clearPendingSeed)
+    {
+        m_pendingEyeRestartSeed = {};
+    }
+    if (action.resetTransactionVisualState)
+    {
+        PortalNativeDiagnostics::Reset("single-eye-history-mode-switch");
+        m_eyeSingleOwnerTransactionActive = false;
+        m_eyeCrossLeafHandoffController.Reset();
+        m_renderCadence.Reset();
+        m_renderCadenceCalcView = {};
+        m_eyeContinuityTransactionId = 0;
+        m_eyeContinuityLastCalcViewFrame = -1;
+        m_eyeContinuityCalcViewCallOrdinal = 0;
+        m_eyeContinuityProjectedPath = false;
+        m_eyeContinuityHistoryRebaseEnabled = false;
+        G::G_L4D2Portal.m_PortalVisualContinuityDiagnostics.ResetCapture(
+            reason ? reason : "single-eye-history-mode-switch");
+    }
+
+    PortalTransitionDecision::SetPortalEyeSingleOwnerEnabled(enabled);
+    m_lastPortalEyeSingleOwnerEnabled = enabled;
+    U::LogInfo(
+        "[PortalEyeSingleOwner] event=mode-switch txn=%u reason=%s enabled=%s->%s priorActive=%s eyeHistoryReset=%s shadowReset=%s pendingSeedCleared=%s transactionVisualReset=%s scope=render-eye-history-only physicsMutation=false.\n",
+        transactionId,
+        reason ? reason : "unknown",
+        BoolText(wasEnabled),
+        BoolText(enabled),
+        BoolText(ownerWasActive),
+        BoolText(action.resetEyeHistoryState),
+        BoolText(action.resetShadowState),
+        BoolText(action.clearPendingSeed),
+        BoolText(action.resetTransactionVisualState));
+}
+
 bool CPortalTransition::PublishPortalEyeTeleport(
     const matrix3x4_t& entryToExit,
     const Vector& exitPlaneOrigin,
@@ -318,7 +711,11 @@ bool CPortalTransition::PublishPortalEyeTeleport(
     int commandNumber,
     std::uint32_t transactionId,
     bool projectedPath,
-    const Vector& projectedHistoryRebaseDelta)
+    const Vector& projectedHistoryRebaseDelta,
+    bool floorWallDiagnostic,
+    const Vector& officialCommandEndEye,
+    const Vector& exitVelocity,
+    float publicationTime)
 {
     const bool initializedBefore = m_eyeContinuity.IsInitialized();
     const bool pendingBefore = m_eyeContinuity.HasPendingTeleport();
@@ -332,9 +729,28 @@ bool CPortalTransition::PublishPortalEyeTeleport(
         commandNumber,
         projectedHistoryRebaseEnabled,
         projectedHistoryRebaseDelta);
+    m_pendingEyeRestartSeed = {};
+    const bool commitSeedPublished = published
+        && transactionId != 0
+        && IsFiniteVector(officialCommandEndEye)
+        && IsFiniteVector(exitVelocity)
+        && std::isfinite(publicationTime);
+    if (commitSeedPublished)
+    {
+        m_pendingEyeRestartSeed.eye = officialCommandEndEye;
+        m_pendingEyeRestartSeed.velocity = exitVelocity;
+        m_pendingEyeRestartSeed.publicationTime = publicationTime;
+        m_pendingEyeRestartSeed.transactionId = transactionId;
+        m_pendingEyeRestartSeed.pendingTransactionId = transactionId;
+        m_pendingEyeRestartSeed.source =
+            PortalEyeContinuity::ShadowRestartSeedSource::OfficialCommandEnd;
+        m_pendingEyeRestartSeed.candidate = true;
+    }
     if (published)
     {
+        PortalNativeDiagnostics::BeginPortal(transactionId, commandNumber, floorWallDiagnostic);
         m_eyeContinuityTransactionId = transactionId;
+        m_eyeCrossLeafHandoffController.Reset();
         m_eyeContinuityProjectedPath = projectedPath;
         m_eyeContinuityHistoryRebaseEnabled =
             projectedHistoryRebaseEnabled;
@@ -344,7 +760,13 @@ bool CPortalTransition::PublishPortalEyeTeleport(
                 m_renderCadence.BeginTransaction(
                     transactionId,
                     commandNumber,
-                    ToRenderCadenceVec3(exitPlaneNormal));
+                    ToRenderCadenceVec3(exitPlaneNormal),
+                    floorWallDiagnostic
+                        ? PortalRenderCadence::Tracker::kFloorWallCaptureCommandTransitions
+                        : PortalRenderCadence::Tracker::kCaptureCommandTransitions,
+                    floorWallDiagnostic
+                        ? PortalRenderCadence::Tracker::kFloorWallMaximumFrames
+                        : PortalRenderCadence::Tracker::kMaximumFrames);
             m_renderCadenceCalcView = {};
             if (cadenceBegin.superseded)
             {
@@ -353,10 +775,17 @@ bool CPortalTransition::PublishPortalEyeTeleport(
                     cadenceBegin.supersededSummary);
             }
             U::LogInfo(
-                "[PortalRenderCadenceBegin] txn=%u committedCmd=%d accepted=%s exitNormal=(%.4f %.4f %.4f) behaviorMutation=false.\n",
+                "[PortalRenderCadenceBegin] txn=%u committedCmd=%d accepted=%s floorWallDiagnostic=%s captureCommandTransitions=%d maximumFrames=%d exitNormal=(%.4f %.4f %.4f) behaviorMutation=false.\n",
                 transactionId,
                 commandNumber,
                 BoolText(cadenceBegin.accepted),
+                BoolText(floorWallDiagnostic),
+                floorWallDiagnostic
+                    ? PortalRenderCadence::Tracker::kFloorWallCaptureCommandTransitions
+                    : PortalRenderCadence::Tracker::kCaptureCommandTransitions,
+                floorWallDiagnostic
+                    ? PortalRenderCadence::Tracker::kFloorWallMaximumFrames
+                    : PortalRenderCadence::Tracker::kMaximumFrames,
                 exitPlaneNormal.x,
                 exitPlaneNormal.y,
                 exitPlaneNormal.z);
@@ -368,7 +797,7 @@ bool CPortalTransition::PublishPortalEyeTeleport(
         }
     }
 
-    U::LogInfo("[PortalEyeHistoryPending] txn=%u epoch=%u cmd=%d enabled=%s initializedBefore=%s pendingBefore=%s published=%s pendingAfter=%s path=%s projectedHistoryRebaseEnabled=%s projectedHistoryRebaseDelta=(%.3f %.3f %.3f) projectedHistoryRebaseLength=%.3f exitPlaneOrigin=(%.3f %.3f %.3f) exitPlaneNormal=(%.4f %.4f %.4f).\n",
+    U::LogInfo("[PortalEyeHistoryPending] txn=%u epoch=%u cmd=%d enabled=%s initializedBefore=%s pendingBefore=%s published=%s pendingAfter=%s path=%s projectedHistoryRebaseEnabled=%s projectedHistoryRebaseDelta=(%.3f %.3f %.3f) projectedHistoryRebaseLength=%.3f exitPlaneOrigin=(%.3f %.3f %.3f) exitPlaneNormal=(%.4f %.4f %.4f) commitSeed(candidate=%s published=%s source=%s publicationTime=%.6f eye=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f)) physicsMutation=false.\n",
         transactionId,
         traversalEpoch,
         commandNumber,
@@ -384,7 +813,18 @@ bool CPortalTransition::PublishPortalEyeTeleport(
         projectedHistoryRebaseDelta.z,
         projectedHistoryRebaseDelta.Lenght(),
         exitPlaneOrigin.x, exitPlaneOrigin.y, exitPlaneOrigin.z,
-        exitPlaneNormal.x, exitPlaneNormal.y, exitPlaneNormal.z);
+        exitPlaneNormal.x, exitPlaneNormal.y, exitPlaneNormal.z,
+        BoolText(m_pendingEyeRestartSeed.candidate),
+        BoolText(commitSeedPublished),
+        PortalEyeContinuity::ShadowRestartSeedSourceName(
+            m_pendingEyeRestartSeed.source),
+        publicationTime,
+        officialCommandEndEye.x,
+        officialCommandEndEye.y,
+        officialCommandEndEye.z,
+        exitVelocity.x,
+        exitVelocity.y,
+        exitVelocity.z);
     return published;
 }
 
@@ -395,6 +835,23 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
 {
     if (!player || !IsLocalPlayer(player))
         return false;
+
+    const bool commitSeedEnabled =
+        PortalTransitionDecision::GetPortalVisualCommitSeedEnabled();
+    if (commitSeedEnabled != m_lastPortalVisualCommitSeedEnabled)
+    {
+        SetPortalVisualCommitSeedEnabled(
+            commitSeedEnabled,
+            "runtime-commit-seed-ab-edge");
+    }
+    const bool singleOwnerEnabled =
+        PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled();
+    if (singleOwnerEnabled != m_lastPortalEyeSingleOwnerEnabled)
+    {
+        SetPortalEyeSingleOwnerEnabled(
+            singleOwnerEnabled,
+            "runtime-single-eye-history-ab-edge");
+    }
 
     const int frameCount =
         I::GlobalVars ? I::GlobalVars->framecount : -1;
@@ -421,11 +878,62 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
     const unsigned int moveType = static_cast<unsigned int>(player->m_MoveType());
     const bool onGround = (playerFlags & FL_ONGROUND) != 0;
     const float frameTime = I::GlobalVars ? I::GlobalVars->frametime : 0.0f;
+    const float predictionHorizon = I::GlobalVars
+        ? I::GlobalVars->interval_per_tick
+        : 0.0f;
+    PortalEyeContinuity::ShadowRestartSeedInput stateRestartSeed =
+        m_pendingEyeRestartSeed;
+    stateRestartSeed.enabled = singleOwnerEnabled && commitSeedEnabled;
+    stateRestartSeed.pendingTransactionId = m_eyeContinuityTransactionId;
+    stateRestartSeed.renderTime = I::EngineClient
+        ? I::EngineClient->OBSOLETE_Time()
+        : (I::GlobalVars ? I::GlobalVars->curtime : 0.0f);
+    stateRestartSeed.stale = stateRestartSeed.candidate
+        && (!m_eyeContinuity.HasPendingTeleport()
+            || stateRestartSeed.transactionId
+                != m_eyeContinuityTransactionId);
     const PortalEyeContinuity::UpdateResult result = m_eyeContinuity.Update(
         PortalTransitionDecision::GetPortalEyeContinuityEnabled(),
         rawPhysicalEye,
         originalViewEye,
-        frameTime);
+        frameTime,
+        predictionHorizon,
+        stateRestartSeed);
+    if (result.consumedPendingTeleport)
+    {
+        m_eyeSingleOwnerTransactionActive = singleOwnerEnabled
+            && result.singleOwnerSeedApplied;
+        if (singleOwnerEnabled
+            && PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
+        {
+            U::LogInfo(
+                "[PortalEyeSingleOwner] event=consume txn=%u epoch=%u cmd=%d frame=%d candidate=%s valid=%s applied=%s active=%s source=%s elapsed=%.6f seedEye=(%.3f %.3f %.3f) advancedSeedEye=(%.3f %.3f %.3f) stateEyeAfterSeed=(%.3f %.3f %.3f) outputEye=(%.3f %.3f %.3f) fallbackToShadow=%s scope=render-eye-history-only physicsMutation=false.\n",
+                m_eyeContinuityTransactionId,
+                result.traversalEpoch,
+                result.commandNumber,
+                frameCount,
+                BoolText(result.singleOwnerSeedCandidate),
+                BoolText(result.singleOwnerSeedValid),
+                BoolText(result.singleOwnerSeedApplied),
+                BoolText(m_eyeSingleOwnerTransactionActive),
+                PortalEyeContinuity::ShadowRestartSeedSourceName(
+                    stateRestartSeed.source),
+                result.singleOwnerSeedElapsed,
+                result.singleOwnerSeedEye.x,
+                result.singleOwnerSeedEye.y,
+                result.singleOwnerSeedEye.z,
+                result.singleOwnerAdvancedSeedEye.x,
+                result.singleOwnerAdvancedSeedEye.y,
+                result.singleOwnerAdvancedSeedEye.z,
+                result.singleOwnerStateEyeAfterSeed.x,
+                result.singleOwnerStateEyeAfterSeed.y,
+                result.singleOwnerStateEyeAfterSeed.z,
+                result.eyeOrigin.x,
+                result.eyeOrigin.y,
+                result.eyeOrigin.z,
+                BoolText(!m_eyeSingleOwnerTransactionActive));
+        }
+    }
     if (result.consumedPendingTeleport)
     {
         const Vector candidateEntryHistory =
@@ -477,12 +985,20 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             result.normalCorrection,
             result.outputExitDepth);
     }
-    const float predictionHorizon = I::GlobalVars
-        ? I::GlobalVars->interval_per_tick
-        : 0.0f;
+    PortalEyeContinuity::ShadowRestartSeedInput restartSeed =
+        m_pendingEyeRestartSeed;
+    restartSeed.enabled = commitSeedEnabled;
+    restartSeed.pendingTransactionId = m_eyeContinuityTransactionId;
+    restartSeed.renderTime = I::EngineClient
+        ? I::EngineClient->OBSOLETE_Time()
+        : (I::GlobalVars ? I::GlobalVars->curtime : 0.0f);
+    restartSeed.stale = restartSeed.candidate
+        && (!result.consumedPendingTeleport
+            || restartSeed.transactionId != m_eyeContinuityTransactionId);
     const PortalEyeContinuity::ShadowPredictionResult shadowResult =
         m_eyeShadowPredictor.Update(
-            PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled(),
+            PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled()
+                && !m_eyeSingleOwnerTransactionActive,
             result.overrideOriginalView,
             result.consumedPendingTeleport,
             result.eyeOrigin,
@@ -491,7 +1007,24 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             frameTime,
             predictionHorizon,
             m_eyeContinuityCalcViewCallOrdinal == 0,
-            PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled());
+            PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled(),
+            restartSeed);
+    if (shadowResult.restarted)
+    {
+        m_eyeShadowPredictorHasCommitSeed =
+            shadowResult.restartSeedApplied;
+    }
+    else if (!shadowResult.initializedAfter)
+    {
+        m_eyeShadowPredictorHasCommitSeed = false;
+    }
+    if (m_pendingEyeRestartSeed.candidate
+        && (result.consumedPendingTeleport
+            || !result.hadPendingTeleport
+            || !PortalTransitionDecision::GetPortalEyeContinuityEnabled()))
+    {
+        m_pendingEyeRestartSeed = {};
+    }
     const Vector candidateEye = shadowResult.eyeOrigin;
     const bool shadowViewActive = result.overrideOriginalView
         || shadowResult.releaseTailActive;
@@ -507,13 +1040,28 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
     int candidateLeaf = -1;
     int originalLeaf = -1;
     EyeSafetySnapshot candidateSafety;
+    EyeLeafHandoffGeometrySnapshot leafHandoffGeometry;
+    bool leafMismatch = false;
+    bool leafHandoffGeometryEvaluated = false;
     bool runtimeSafetyFallback = false;
     const char* runtimeSafetyReason = "none";
-    if (shadowViewActive && I::EngineTrace)
+    const bool crossLeafHandoffEnabled =
+        PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled();
+    const bool transactionDiagnosticsEnabled =
+        PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled();
+    if (PortalTransitionDecision::ShouldFailClosedForMissingPortalEyeSafetyInterface(
+            shadowViewActive,
+            I::EngineTrace != nullptr))
+    {
+        runtimeSafetyFallback = true;
+        runtimeSafetyReason = "engine-trace-unavailable";
+    }
+    else if (shadowViewActive)
     {
         candidateSafety = CaptureEyeSafetySnapshot(candidateEye);
         candidateLeaf = candidateSafety.leaf;
         originalLeaf = I::EngineTrace->GetLeafContainingPoint(originalViewEye);
+        leafMismatch = originalLeaf > 0 && candidateLeaf != originalLeaf;
         if (!hasActiveExitPlane)
         {
             runtimeSafetyFallback = true;
@@ -539,11 +1087,210 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             runtimeSafetyFallback = true;
             runtimeSafetyReason = "invalid-candidate-leaf";
         }
-        else if (originalLeaf > 0 && candidateLeaf != originalLeaf)
+        else if (originalLeaf <= 0)
         {
             runtimeSafetyFallback = true;
-            runtimeSafetyReason = "candidate-leaf-mismatch";
+            runtimeSafetyReason = "invalid-original-leaf";
         }
+        else
+        {
+            leafHandoffGeometry = CaptureEyeLeafHandoffGeometrySnapshot(
+                candidateEye,
+                candidateSafety,
+                originalViewEye);
+            leafHandoffGeometryEvaluated = true;
+            const auto& forwardTrace =
+                leafHandoffGeometry.input.originalToCandidate;
+            const auto& reverseTrace =
+                leafHandoffGeometry.input.candidateToOriginal;
+            const bool forwardEndFinite =
+                std::isfinite(forwardTrace.endPosition.x)
+                && std::isfinite(forwardTrace.endPosition.y)
+                && std::isfinite(forwardTrace.endPosition.z);
+            const bool reverseEndFinite =
+                std::isfinite(reverseTrace.endPosition.x)
+                && std::isfinite(reverseTrace.endPosition.y)
+                && std::isfinite(reverseTrace.endPosition.z);
+            if (!PortalTransitionDecision::ArePortalEyeBidirectionalSafetyTracesClear(
+                    forwardTrace.available,
+                    forwardTrace.fraction,
+                    forwardTrace.startSolid,
+                    forwardTrace.allSolid,
+                    forwardEndFinite,
+                    reverseTrace.available,
+                    reverseTrace.fraction,
+                    reverseTrace.startSolid,
+                    reverseTrace.allSolid,
+                    reverseEndFinite))
+            {
+                runtimeSafetyFallback = true;
+                runtimeSafetyReason = "candidate-trace-blocked";
+            }
+            else if (leafMismatch)
+            {
+                runtimeSafetyFallback = true;
+                runtimeSafetyReason = "candidate-leaf-mismatch";
+            }
+        }
+    }
+
+    const PortalTransitionDecision::PortalEyeCrossLeafHandoffFrameDecision
+        crossLeafHandoffDecision =
+            m_eyeCrossLeafHandoffController.EvaluateFrame(
+                crossLeafHandoffEnabled,
+                leafMismatch,
+                leafHandoffGeometryEvaluated
+                    && leafHandoffGeometry.result.geometryClear,
+                runtimeSafetyFallback && !leafMismatch);
+    const bool allowCrossLeafHandoff =
+        crossLeafHandoffDecision.allowCandidate;
+    const bool firstCrossLeafAuthorizationEdge =
+        crossLeafHandoffDecision.emitAllowEdge;
+    const bool laterCrossLeafSafetyRejectionEdge =
+        crossLeafHandoffDecision.emitRejectEdge;
+    if (allowCrossLeafHandoff)
+    {
+        runtimeSafetyFallback = false;
+        runtimeSafetyReason = "none";
+    }
+
+    if (PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()
+        && leafMismatch
+        && leafHandoffGeometryEvaluated
+        && (!allowCrossLeafHandoff || firstCrossLeafAuthorizationEdge))
+    {
+        U::LogInfo(
+            "[PortalEyeLeafHandoffProbe] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d reason=%s candidateExitDepth=%.3f candidateOriginalDistance=%.3f fallbackDelta=(%.3f %.3f %.3f) fallbackDeltaLength=%.3f candidate=(eye=(%.3f %.3f %.3f) leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) original=(eye=(%.3f %.3f %.3f) leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) originalToCandidate=(available=%s fraction=%.4f startsolid=%s allsolid=%s end=(%.3f %.3f %.3f)) candidateToOriginal=(available=%s fraction=%.4f startsolid=%s allsolid=%s end=(%.3f %.3f %.3f)) geometryClear=%s diagnosticMutation=false viewMutation=false physicsMutation=false.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            frameCount,
+            m_eyeContinuityCalcViewCallOrdinal,
+            "candidate-leaf-mismatch",
+            candidateExitDepth,
+            leafHandoffGeometry.result.candidateOriginalDistance,
+            leafHandoffGeometry.result.fallbackDelta.x,
+            leafHandoffGeometry.result.fallbackDelta.y,
+            leafHandoffGeometry.result.fallbackDelta.z,
+            leafHandoffGeometry.result.fallbackDeltaLength,
+            candidateEye.x,
+            candidateEye.y,
+            candidateEye.z,
+            candidateSafety.leaf,
+            static_cast<unsigned int>(candidateSafety.worldContents),
+            static_cast<unsigned int>(candidateSafety.playerSolidContents),
+            BoolText(candidateSafety.outsideWorld),
+            BoolText(candidateSafety.available),
+            originalViewEye.x,
+            originalViewEye.y,
+            originalViewEye.z,
+            leafHandoffGeometry.originalSafety.leaf,
+            static_cast<unsigned int>(leafHandoffGeometry.originalSafety.worldContents),
+            static_cast<unsigned int>(leafHandoffGeometry.originalSafety.playerSolidContents),
+            BoolText(leafHandoffGeometry.originalSafety.outsideWorld),
+            BoolText(leafHandoffGeometry.originalSafety.available),
+            BoolText(leafHandoffGeometry.input.originalToCandidate.available),
+            leafHandoffGeometry.input.originalToCandidate.fraction,
+            BoolText(leafHandoffGeometry.input.originalToCandidate.startSolid),
+            BoolText(leafHandoffGeometry.input.originalToCandidate.allSolid),
+            leafHandoffGeometry.input.originalToCandidate.endPosition.x,
+            leafHandoffGeometry.input.originalToCandidate.endPosition.y,
+            leafHandoffGeometry.input.originalToCandidate.endPosition.z,
+            BoolText(leafHandoffGeometry.input.candidateToOriginal.available),
+            leafHandoffGeometry.input.candidateToOriginal.fraction,
+            BoolText(leafHandoffGeometry.input.candidateToOriginal.startSolid),
+            BoolText(leafHandoffGeometry.input.candidateToOriginal.allSolid),
+            leafHandoffGeometry.input.candidateToOriginal.endPosition.x,
+            leafHandoffGeometry.input.candidateToOriginal.endPosition.y,
+            leafHandoffGeometry.input.candidateToOriginal.endPosition.z,
+            BoolText(leafHandoffGeometry.result.geometryClear));
+    }
+
+    if (firstCrossLeafAuthorizationEdge || laterCrossLeafSafetyRejectionEdge)
+    {
+        U::LogInfo(
+            "[PortalEyeLeafHandoffDecision] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d decision=%s reason=%s enabled=%s leafMismatch=%s geometryEvaluated=%s geometryClear=%s candidateExitDepth=%.3f candidateOriginalDistance=%.3f action=%s recheckedEveryMismatch=true viewMutation=%s physicsMutation=false.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            frameCount,
+            m_eyeContinuityCalcViewCallOrdinal,
+            firstCrossLeafAuthorizationEdge
+                ? "allow-safe-cross-leaf"
+                : "reject-unsafe-cross-leaf",
+            firstCrossLeafAuthorizationEdge
+                ? "candidate-leaf-mismatch"
+                : runtimeSafetyReason,
+            BoolText(PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled()),
+            BoolText(leafMismatch),
+            BoolText(leafHandoffGeometryEvaluated),
+            BoolText(leafHandoffGeometryEvaluated
+                && leafHandoffGeometry.result.geometryClear),
+            candidateExitDepth,
+            leafHandoffGeometryEvaluated
+                ? leafHandoffGeometry.result.candidateOriginalDistance
+                : 0.0f,
+            firstCrossLeafAuthorizationEdge
+                ? "retain-predictor-candidate"
+                : "reset-fallback-original",
+            firstCrossLeafAuthorizationEdge ? "render-eye-only" : "false");
+    }
+
+    const bool horizonExpired = shadowResult.releaseTailEndReason
+        == PortalEyeContinuity::ShadowReleaseTailEndReason::HorizonExpired;
+    if (m_eyeCrossLeafHandoffController.ConsumeHorizonExpiryProbeEdge(
+            transactionDiagnosticsEnabled,
+            shadowResult.releaseTailEnded,
+            horizonExpired))
+    {
+        const Vector tailCandidateEye = shadowResult.shadowEyeAfter;
+        const EyeSafetySnapshot tailCandidateSafety =
+            CaptureEyeSafetySnapshot(tailCandidateEye);
+        const EyeLeafHandoffGeometrySnapshot tailGeometry =
+            CaptureEyeLeafHandoffGeometrySnapshot(
+                tailCandidateEye,
+                tailCandidateSafety,
+                originalViewEye);
+        U::LogInfo(
+            "[PortalEyeReleaseTailProbe] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d reason=horizon-expired residual=%.3f candidateOriginalDistance=%.3f candidate=(eye=(%.3f %.3f %.3f) leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) original=(eye=(%.3f %.3f %.3f) leaf=%d world=0x%X playerSolid=0x%X outside=%s available=%s) originalToCandidate=(available=%s fraction=%.4f startsolid=%s allsolid=%s end=(%.3f %.3f %.3f)) candidateToOriginal=(available=%s fraction=%.4f startsolid=%s allsolid=%s end=(%.3f %.3f %.3f)) geometryClear=%s diagnosticMutation=false tailMutation=false viewMutation=false physicsMutation=false.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            frameCount,
+            m_eyeContinuityCalcViewCallOrdinal,
+            shadowResult.releaseTailResidual,
+            tailGeometry.result.candidateOriginalDistance,
+            tailCandidateEye.x,
+            tailCandidateEye.y,
+            tailCandidateEye.z,
+            tailCandidateSafety.leaf,
+            static_cast<unsigned int>(tailCandidateSafety.worldContents),
+            static_cast<unsigned int>(tailCandidateSafety.playerSolidContents),
+            BoolText(tailCandidateSafety.outsideWorld),
+            BoolText(tailCandidateSafety.available),
+            originalViewEye.x,
+            originalViewEye.y,
+            originalViewEye.z,
+            tailGeometry.originalSafety.leaf,
+            static_cast<unsigned int>(tailGeometry.originalSafety.worldContents),
+            static_cast<unsigned int>(tailGeometry.originalSafety.playerSolidContents),
+            BoolText(tailGeometry.originalSafety.outsideWorld),
+            BoolText(tailGeometry.originalSafety.available),
+            BoolText(tailGeometry.input.originalToCandidate.available),
+            tailGeometry.input.originalToCandidate.fraction,
+            BoolText(tailGeometry.input.originalToCandidate.startSolid),
+            BoolText(tailGeometry.input.originalToCandidate.allSolid),
+            tailGeometry.input.originalToCandidate.endPosition.x,
+            tailGeometry.input.originalToCandidate.endPosition.y,
+            tailGeometry.input.originalToCandidate.endPosition.z,
+            BoolText(tailGeometry.input.candidateToOriginal.available),
+            tailGeometry.input.candidateToOriginal.fraction,
+            BoolText(tailGeometry.input.candidateToOriginal.startSolid),
+            BoolText(tailGeometry.input.candidateToOriginal.allSolid),
+            tailGeometry.input.candidateToOriginal.endPosition.x,
+            tailGeometry.input.candidateToOriginal.endPosition.y,
+            tailGeometry.input.candidateToOriginal.endPosition.z,
+            BoolText(tailGeometry.result.geometryClear));
     }
 
     if (runtimeSafetyFallback)
@@ -553,6 +1300,22 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         // residual to select a different BSP leaf.
         m_eyeContinuity.Reset();
         m_eyeShadowPredictor.Reset();
+        m_eyeShadowDiagnosticLogGate.Reset();
+        m_pendingEyeRestartSeed = {};
+        m_eyeShadowPredictorHasCommitSeed = false;
+        if (m_eyeSingleOwnerTransactionActive
+            && transactionDiagnosticsEnabled)
+        {
+            U::LogInfo(
+                "[PortalEyeSingleOwner] event=end txn=%u epoch=%u cmd=%d frame=%d reason=%s stateResidual=%.3f scope=render-eye-history-only physicsMutation=false.\n",
+                m_eyeContinuityTransactionId,
+                result.traversalEpoch,
+                result.commandNumber,
+                frameCount,
+                runtimeSafetyReason,
+                result.originalViewResidual);
+        }
+        m_eyeSingleOwnerTransactionActive = false;
         eyeOrigin = originalViewEye;
     }
     else if (shadowViewActive)
@@ -746,7 +1509,7 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
         && shouldLogShadowPredictor)
     {
         U::LogInfo(
-            "[PortalEyeShadowPredictor] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d enabled=%s continuityActive=%s restart=%s initialized=%s->%s rawAdvanced=%s advanceFrameClock=%s worldSpaceAdvanced=%s applied=%s horizonClamped=%s predictionElapsed=%.6f->%.6f predictionHorizon=%.6f releaseTail(enabled=%s active=%s->%s started=%s ended=%s reason=%s rawAdvanceSeen=%s elapsed=%.6f->%.6f residual=%.3f) baselineEye=(%.3f %.3f %.3f) baselineDelta=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) rawDelta=(%.3f %.3f %.3f) shadowEye=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) shadowFrameDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) predictionOffset=(%.3f %.3f %.3f) candidateEye=(%.3f %.3f %.3f) candidateExitDepth=%.3f runtimeSafetyFallback=%s runtimeSafetyReason=%s physicsMutation=false viewMutation=%s.\n",
+            "[PortalEyeShadowPredictor] txn=%u epoch=%u cmd=%d frame=%d callOrdinal=%d enabled=%s continuityActive=%s restart=%s initialized=%s->%s rawAdvanced=%s advanceFrameClock=%s worldSpaceAdvanced=%s applied=%s commitSeed(enabled=%s candidate=%s valid=%s applied=%s source=%s elapsed=%.6f seedEye=(%.3f %.3f %.3f) advancedSeedEye=(%.3f %.3f %.3f)) horizonClamped=%s predictionElapsed=%.6f->%.6f predictionHorizon=%.6f releaseTail(enabled=%s active=%s->%s started=%s ended=%s reason=%s rawAdvanceSeen=%s elapsed=%.6f->%.6f residual=%.3f) baselineEye=(%.3f %.3f %.3f) baselineDelta=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) rawDelta=(%.3f %.3f %.3f) shadowEye=(%.3f %.3f %.3f)->(%.3f %.3f %.3f) shadowFrameDelta=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) predictionOffset=(%.3f %.3f %.3f) candidateEye=(%.3f %.3f %.3f) candidateExitDepth=%.3f runtimeSafetyFallback=%s runtimeSafetyReason=%s physicsMutation=false viewMutation=%s.\n",
             m_eyeContinuityTransactionId,
             result.traversalEpoch,
             result.commandNumber,
@@ -761,6 +1524,19 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             BoolText(m_eyeContinuityCalcViewCallOrdinal == 0),
             BoolText(shadowResult.worldSpaceAdvanced),
             BoolText(shadowResult.applied),
+            BoolText(shadowResult.restartSeedEnabled),
+            BoolText(shadowResult.restartSeedCandidate),
+            BoolText(shadowResult.restartSeedValid),
+            BoolText(shadowResult.restartSeedApplied),
+            PortalEyeContinuity::ShadowRestartSeedSourceName(
+                shadowResult.restartSeedSource),
+            shadowResult.restartSeedElapsed,
+            shadowResult.restartSeedEye.x,
+            shadowResult.restartSeedEye.y,
+            shadowResult.restartSeedEye.z,
+            shadowResult.advancedRestartSeedEye.x,
+            shadowResult.advancedRestartSeedEye.y,
+            shadowResult.advancedRestartSeedEye.z,
             BoolText(shadowResult.horizonClamped),
             shadowResult.predictionElapsedBefore,
             shadowResult.predictionElapsed,
@@ -812,11 +1588,29 @@ bool CPortalTransition::ApplyPortalEyeContinuity(
             BoolText(shadowResult.applied && !runtimeSafetyFallback));
     }
 
+    if (m_eyeSingleOwnerTransactionActive
+        && result.releasedOverride
+        && transactionDiagnosticsEnabled)
+    {
+        U::LogInfo(
+            "[PortalEyeSingleOwner] event=end txn=%u epoch=%u cmd=%d frame=%d reason=state-converged stateResidual=%.3f outputEye=(%.3f %.3f %.3f) scope=render-eye-history-only physicsMutation=false.\n",
+            m_eyeContinuityTransactionId,
+            result.traversalEpoch,
+            result.commandNumber,
+            frameCount,
+            result.originalViewResidual,
+            result.eyeOrigin.x,
+            result.eyeOrigin.y,
+            result.eyeOrigin.z);
+        m_eyeSingleOwnerTransactionActive = false;
+    }
+
     if (runtimeSafetyFallback
         || shadowResult.releaseTailEnded
         || (result.releasedOverride && !shadowResult.releaseTailActive))
     {
         m_eyeContinuityTransactionId = 0;
+        m_eyeCrossLeafHandoffController.Reset();
         m_eyeContinuityProjectedPath = false;
         m_eyeContinuityHistoryRebaseEnabled = false;
     }
@@ -827,7 +1621,10 @@ void CPortalTransition::CapturePortalRenderCadenceCalcView(
     C_BasePlayer* player,
     const Vector& calcViewInputEye,
     const Vector& originalViewEye,
-    const Vector& adaptedViewEye)
+    const Vector& adaptedViewEye,
+    const Vector& calcViewInputAngles,
+    const Vector& originalViewAngles,
+    const Vector& adaptedViewAngles)
 {
     if (!player || !IsLocalPlayer(player))
         return;
@@ -847,11 +1644,14 @@ void CPortalTransition::CapturePortalRenderCadenceCalcView(
     m_renderCadenceCalcView.inputEye = calcViewInputEye;
     m_renderCadenceCalcView.originalEye = originalViewEye;
     m_renderCadenceCalcView.adaptedEye = adaptedViewEye;
+    m_renderCadenceCalcView.inputAngles = calcViewInputAngles;
+    m_renderCadenceCalcView.originalAngles = originalViewAngles;
+    m_renderCadenceCalcView.adaptedAngles = adaptedViewAngles;
 }
 
 void CPortalTransition::RecordPortalRenderCadence(
     C_BasePlayer* player,
-    const Vector& finalViewEye)
+    const CViewSetup& finalView)
 {
     if (!player || !IsLocalPlayer(player))
         return;
@@ -884,30 +1684,49 @@ void CPortalTransition::RecordPortalRenderCadence(
         : rawEye;
     const Vector adaptedViewEye = calcViewMatched
         ? m_renderCadenceCalcView.adaptedEye
-        : finalViewEye;
+        : finalView.origin;
+    const Vector finalViewAnglesVector(
+        finalView.angles.x,
+        finalView.angles.y,
+        finalView.angles.z);
+    const Vector calcViewInputAngles = calcViewMatched
+        ? m_renderCadenceCalcView.inputAngles
+        : finalViewAnglesVector;
+    const Vector originalViewAngles = calcViewMatched
+        ? m_renderCadenceCalcView.originalAngles
+        : finalViewAnglesVector;
+    const Vector adaptedViewAngles = calcViewMatched
+        ? m_renderCadenceCalcView.adaptedAngles
+        : finalViewAnglesVector;
 
     PortalRenderCadence::Sample sample;
     sample.calcViewInputEye = ToRenderCadenceVec3(calcViewInputEye);
     sample.rawEye = ToRenderCadenceVec3(rawEye);
     sample.originalEye = ToRenderCadenceVec3(originalViewEye);
     sample.appliedEye = ToRenderCadenceVec3(adaptedViewEye);
-    sample.finalViewEye = ToRenderCadenceVec3(finalViewEye);
+    sample.finalViewEye = ToRenderCadenceVec3(finalView.origin);
     sample.playerOrigin = ToRenderCadenceVec3(playerOrigin);
     sample.renderOrigin = ToRenderCadenceVec3(renderOrigin);
     sample.networkOrigin = ToRenderCadenceVec3(networkOrigin);
     sample.oldOrigin = ToRenderCadenceVec3(oldOrigin);
     sample.velocity = ToRenderCadenceVec3(velocity);
+    sample.calcViewInputAngles = ToRenderCadenceVec3(calcViewInputAngles);
+    sample.originalViewAngles = ToRenderCadenceVec3(originalViewAngles);
+    sample.appliedViewAngles = ToRenderCadenceVec3(adaptedViewAngles);
+    sample.finalViewAngles = ToRenderCadenceVec3(finalViewAnglesVector);
     sample.simulationTime = player->m_flSimulationTime();
     sample.frameTime = I::GlobalVars ? I::GlobalVars->frametime : 0.0f;
     sample.frameCount = frameCount;
     sample.tickCount = I::GlobalVars ? I::GlobalVars->tickcount : -1;
-    sample.commandNumber = context.lastCommandNumber;
+    sample.commandNumber = PortalNativeDiagnostics::LatestInputCommand();
     sample.eyeHistoryActive = calcViewMatched
         && m_renderCadenceCalcView.eyeHistoryActive;
     sample.eyeHistoryReleased = calcViewMatched
         && m_renderCadenceCalcView.eyeHistoryReleased;
     sample.shadowPredictorApplied = calcViewMatched
         && m_renderCadenceCalcView.shadowPredictorApplied;
+    PortalNativeDiagnostics::EyeState(calcViewMatched, sample.eyeHistoryActive,
+        sample.eyeHistoryReleased, sample.shadowPredictorApplied);
 
     const PortalRenderCadence::RecordResult result =
         m_renderCadence.RecordFrame(sample);
@@ -931,7 +1750,7 @@ void CPortalTransition::RecordPortalRenderCadence(
     if (shouldLogCadenceDetail)
     {
         U::LogInfo(
-        "[PortalRenderCadenceFrame] txn=%u ordinal=%d frame=%d tick=%d cmd=%d committedCmd=%d commandDelta=%d phase=%s calcViewMatched=%s hasPrevious=%s commandAdvanced=%s tickAdvanced=%s state(eyeHistory=%s released=%s shadowApplied=%s postHistory=%s eyeHistoryChanged=%s shadowChanged=%s) speed(expected=%.3f adapterProjected=%.3f adapterRatio=%.3f finalProjected=%.3f finalRatio=%.3f under=%s underChanged=%s threshold=%.3f) frozen(calcInput=%s raw=%s original=%s adapter=%s final=%s abs=%s render=%s network=%s old=%s simTime=%s) freezeRun(calcInput=%d raw=%d original=%d adapter=%d final=%d abs=%d render=%d network=%d old=%d simTime=%d) deltaLength(calcInput=%.3f raw=%.3f original=%.3f adapter=%.3f final=%.3f abs=%.3f render=%.3f network=%.3f old=%.3f simTime=%.6f) adapterExitNormalDelta=%.3f adapterExitTangentDelta=%.3f behaviorMutation=false.\n",
+        "[PortalRenderCadenceFrame] txn=%u ordinal=%d frame=%d tick=%d cmd=%d committedCmd=%d commandDelta=%d phase=%s calcViewMatched=%s hasPrevious=%s commandAdvanced=%s tickAdvanced=%s state(eyeHistory=%s released=%s shadowApplied=%s postHistory=%s eyeHistoryChanged=%s shadowChanged=%s) speed(expected=%.3f adapterProjected=%.3f adapterRatio=%.3f finalProjected=%.3f finalRatio=%.3f under=%s underChanged=%s threshold=%.3f) frozen(calcInput=%s raw=%s original=%s adapter=%s final=%s finalAngles=%s abs=%s render=%s network=%s old=%s simTime=%s) freezeRun(calcInput=%d raw=%d original=%d adapter=%d final=%d finalAngles=%d abs=%d render=%d network=%d old=%d simTime=%d) deltaLength(calcInput=%.3f raw=%.3f original=%.3f adapter=%.3f final=%.3f finalAngles=%.3f abs=%.3f render=%.3f network=%.3f old=%.3f simTime=%.6f) adapterExitNormalDelta=%.3f adapterExitTangentDelta=%.3f behaviorMutation=false.\n",
         result.transactionId,
         result.ordinal,
         sample.frameCount,
@@ -963,6 +1782,7 @@ void CPortalTransition::RecordPortalRenderCadence(
         BoolText(result.originalFrozen),
         BoolText(result.appliedFrozen),
         BoolText(result.finalViewFrozen),
+        BoolText(result.finalViewAnglesFrozen),
         BoolText(result.originFrozen),
         BoolText(result.renderOriginFrozen),
         BoolText(result.networkOriginFrozen),
@@ -973,6 +1793,7 @@ void CPortalTransition::RecordPortalRenderCadence(
         result.originalConsecutiveFrozenFrames,
         result.appliedConsecutiveFrozenFrames,
         result.finalViewConsecutiveFrozenFrames,
+        result.finalViewAnglesConsecutiveFrozenFrames,
         result.originConsecutiveFrozenFrames,
         result.renderOriginConsecutiveFrozenFrames,
         result.networkOriginConsecutiveFrozenFrames,
@@ -983,6 +1804,7 @@ void CPortalTransition::RecordPortalRenderCadence(
         result.originalDeltaLength,
         result.appliedDeltaLength,
         result.finalViewDeltaLength,
+        result.finalViewAngleDeltaLength,
         result.originDeltaLength,
         result.renderOriginDeltaLength,
         result.networkOriginDeltaLength,
@@ -992,7 +1814,7 @@ void CPortalTransition::RecordPortalRenderCadence(
         result.appliedExitTangentDelta);
 
         U::LogInfo(
-        "[PortalRenderCadenceSources] txn=%u ordinal=%d frame=%d calcViewMatched=%s calcInputEye=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) originalEye=(%.3f %.3f %.3f) adapterEye=(%.3f %.3f %.3f) finalViewEye=(%.3f %.3f %.3f) absOrigin=(%.3f %.3f %.3f) renderOrigin=(%.3f %.3f %.3f) networkOrigin=(%.3f %.3f %.3f) oldOrigin=(%.3f %.3f %.3f) simulationTime=%.6f originToRawEye=(%.3f %.3f %.3f) rawToOriginal=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) expectedFrameDelta=(%.3f %.3f %.3f) speed=%.3f frameTime=%.6f intervalPerTick=%.6f expectedTickDistance=%.3f behaviorMutation=false.\n",
+        "[PortalRenderCadenceSources] txn=%u ordinal=%d frame=%d calcViewMatched=%s calcInputEye=(%.3f %.3f %.3f) rawEye=(%.3f %.3f %.3f) originalEye=(%.3f %.3f %.3f) adapterEye=(%.3f %.3f %.3f) finalViewEye=(%.3f %.3f %.3f) angles(calcInput=(%.3f %.3f %.3f) original=(%.3f %.3f %.3f) adapter=(%.3f %.3f %.3f) final=(%.3f %.3f %.3f)) absOrigin=(%.3f %.3f %.3f) renderOrigin=(%.3f %.3f %.3f) networkOrigin=(%.3f %.3f %.3f) oldOrigin=(%.3f %.3f %.3f) simulationTime=%.6f originToRawEye=(%.3f %.3f %.3f) rawToOriginal=(%.3f %.3f %.3f) velocity=(%.3f %.3f %.3f) expectedFrameDelta=(%.3f %.3f %.3f) speed=%.3f frameTime=%.6f intervalPerTick=%.6f expectedTickDistance=%.3f behaviorMutation=false.\n",
         result.transactionId,
         result.ordinal,
         sample.frameCount,
@@ -1001,7 +1823,11 @@ void CPortalTransition::RecordPortalRenderCadence(
         rawEye.x, rawEye.y, rawEye.z,
         originalViewEye.x, originalViewEye.y, originalViewEye.z,
         adaptedViewEye.x, adaptedViewEye.y, adaptedViewEye.z,
-        finalViewEye.x, finalViewEye.y, finalViewEye.z,
+        finalView.origin.x, finalView.origin.y, finalView.origin.z,
+        calcViewInputAngles.x, calcViewInputAngles.y, calcViewInputAngles.z,
+        originalViewAngles.x, originalViewAngles.y, originalViewAngles.z,
+        adaptedViewAngles.x, adaptedViewAngles.y, adaptedViewAngles.z,
+        finalView.angles.x, finalView.angles.y, finalView.angles.z,
         playerOrigin.x, playerOrigin.y, playerOrigin.z,
         renderOrigin.x, renderOrigin.y, renderOrigin.z,
         networkOrigin.x, networkOrigin.y, networkOrigin.z,
@@ -1017,6 +1843,79 @@ void CPortalTransition::RecordPortalRenderCadence(
         sample.frameTime,
         intervalPerTick,
         speed * intervalPerTick);
+    }
+
+    PortalFloorWallDiagnosticContext floorWallDiagnostic;
+    int floorWallCommandDelta = 0;
+    const bool floorWallWindow =
+        G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetFloorWallDiagnostic(
+            sample.commandNumber,
+            &floorWallDiagnostic,
+            &floorWallCommandDelta)
+        && floorWallDiagnostic.transactionId == result.transactionId;
+    if (floorWallWindow && shouldLogCadenceDetail)
+    {
+        const Vector finalResidual = finalView.origin - rawEye;
+        const Vector finalViewDelta = result.hasPrevious
+            ? finalView.origin
+                - FromRenderCadenceVec3(result.previous.finalViewEye)
+            : Vector();
+        const Vector rawEyeDelta = result.hasPrevious
+            ? rawEye - FromRenderCadenceVec3(result.previous.rawEye)
+            : Vector();
+        U::LogInfo(
+            "[PortalFloorWallViewCommand] txn=%u committedCmd=%d cmd=%d commandDelta=%d ordinal=%d frame=%d tick=%d phase=%s calcViewMatched=%s state(eyeHistory=%s released=%s shadowApplied=%s postHistory=%s) eye(raw=(%.3f %.3f %.3f) original=(%.3f %.3f %.3f) adapter=(%.3f %.3f %.3f) final=(%.3f %.3f %.3f) residual=(%.3f %.3f %.3f) residualLength=%.4f) frameDelta(raw=(%.3f %.3f %.3f) final=(%.3f %.3f %.3f) finalLength=%.4f exitNormal=%.4f exitRight=%.4f exitUp=%.4f) angles(calcInput=(%.3f %.3f %.3f) original=(%.3f %.3f %.3f) adapter=(%.3f %.3f %.3f) final=(%.3f %.3f %.3f) deltaLength=%.4f frozen=%s freezeRun=%d) entity(abs=(%.3f %.3f %.3f) render=(%.3f %.3f %.3f) network=(%.3f %.3f %.3f) old=(%.3f %.3f %.3f) simulationTime=%.6f) velocity=(%.3f %.3f %.3f) speed3D=%.3f worldZ=%.3f exitNormal=%.3f exitRight=%.3f exitUp=%.3f diagnosticMutation=false behaviorMutation=false.\n",
+            floorWallDiagnostic.transactionId,
+            floorWallDiagnostic.committedCommandNumber,
+            sample.commandNumber,
+            floorWallCommandDelta,
+            result.ordinal,
+            sample.frameCount,
+            sample.tickCount,
+            SimulatorPhaseName(context.phase),
+            BoolText(calcViewMatched),
+            BoolText(sample.eyeHistoryActive),
+            BoolText(sample.eyeHistoryReleased),
+            BoolText(sample.shadowPredictorApplied),
+            BoolText(result.postEyeHistory),
+            rawEye.x, rawEye.y, rawEye.z,
+            originalViewEye.x, originalViewEye.y, originalViewEye.z,
+            adaptedViewEye.x, adaptedViewEye.y, adaptedViewEye.z,
+            finalView.origin.x, finalView.origin.y, finalView.origin.z,
+            finalResidual.x, finalResidual.y, finalResidual.z,
+            finalResidual.Lenght(),
+            rawEyeDelta.x, rawEyeDelta.y, rawEyeDelta.z,
+            finalViewDelta.x, finalViewDelta.y, finalViewDelta.z,
+            finalViewDelta.Lenght(),
+            finalViewDelta.Dot(floorWallDiagnostic.exitPlaneNormal),
+            finalViewDelta.Dot(floorWallDiagnostic.exitRight),
+            finalViewDelta.Dot(floorWallDiagnostic.exitUp),
+            calcViewInputAngles.x,
+            calcViewInputAngles.y,
+            calcViewInputAngles.z,
+            originalViewAngles.x,
+            originalViewAngles.y,
+            originalViewAngles.z,
+            adaptedViewAngles.x,
+            adaptedViewAngles.y,
+            adaptedViewAngles.z,
+            finalView.angles.x,
+            finalView.angles.y,
+            finalView.angles.z,
+            result.finalViewAngleDeltaLength,
+            BoolText(result.finalViewAnglesFrozen),
+            result.finalViewAnglesConsecutiveFrozenFrames,
+            playerOrigin.x, playerOrigin.y, playerOrigin.z,
+            renderOrigin.x, renderOrigin.y, renderOrigin.z,
+            networkOrigin.x, networkOrigin.y, networkOrigin.z,
+            oldOrigin.x, oldOrigin.y, oldOrigin.z,
+            sample.simulationTime,
+            velocity.x, velocity.y, velocity.z,
+            velocity.Lenght(),
+            velocity.z,
+            velocity.Dot(floorWallDiagnostic.exitPlaneNormal),
+            velocity.Dot(floorWallDiagnostic.exitRight),
+            velocity.Dot(floorWallDiagnostic.exitUp));
     }
 
     if (result.completed)
@@ -1438,7 +2337,10 @@ void CPortalTransition::LogRenderEnvironmentSnapshot(
     const PortalTransitionContext& context =
         G::G_L4D2Portal.m_PortalTransitionSimulator.GetContext();
     if (isMainView && player)
-        RecordPortalRenderCadence(player, view.origin);
+    {
+        RecordPortalRenderCadence(player, view);
+        PortalNativeDiagnostics::FinalView(view);
+    }
 
     if (isMainView
         && player

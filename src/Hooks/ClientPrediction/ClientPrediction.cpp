@@ -1,4 +1,5 @@
 #include "ClientPrediction.h"
+#include "../../Portal/PortalNativeDiagnostics.h"
 #include "../ServerPlayer/ServerPlayerRunCommand.h"
 #include "../../Portal/L4D2_Portal.h"
 #include "../../Portal/PortalTransform.h"
@@ -182,6 +183,158 @@ namespace
 			commandAnglesBefore.x, commandAnglesBefore.y, commandAnglesBefore.z);
 		return continuityTransactionId;
 	}
+
+	struct FloorWallClientCommandState
+	{
+		std::uint32_t transactionId = 0;
+		int lastCommandNumber = 0;
+		Vector lastOrigin;
+		Vector lastVelocity;
+		bool valid = false;
+	};
+
+	thread_local FloorWallClientCommandState g_floorWallClientCommandState;
+
+	void LogFloorWallCommandBoundary(
+		const char* stage,
+		C_BasePlayer* player,
+		CUserCmd* ucmd,
+		CMoveData* move)
+	{
+		if (!stage
+			|| std::strcmp(stage, "processmovement-post-original") != 0
+			|| !player
+			|| !ucmd
+			|| !move)
+		{
+			return;
+		}
+
+		PortalFloorWallDiagnosticContext diagnostic;
+		int commandDelta = 0;
+		if (!G::G_L4D2Portal.m_PortalTransitionSimulator.TryGetFloorWallDiagnostic(
+				ucmd->command_number,
+				&diagnostic,
+				&commandDelta))
+		{
+			return;
+		}
+
+		if (!PortalNativeDiagnostics::AllowFloorWallCommand(diagnostic.transactionId, false))
+			return;
+		const Vector origin = player->GetAbsOrigin();
+		const Vector velocity = player->m_vecVelocity();
+		const Vector moveOrigin = move->GetAbsOrigin();
+		const Vector moveVelocity = move->m_vecVelocity;
+		const bool sameTransaction =
+			g_floorWallClientCommandState.valid
+			&& g_floorWallClientCommandState.transactionId
+				== diagnostic.transactionId;
+		const bool replayed = sameTransaction
+			&& ucmd->command_number
+				<= g_floorWallClientCommandState.lastCommandNumber;
+		const bool hasPreviousCommand = sameTransaction
+			&& ucmd->command_number
+			> g_floorWallClientCommandState.lastCommandNumber;
+		const Vector originStep = hasPreviousCommand
+			? origin - g_floorWallClientCommandState.lastOrigin
+			: Vector();
+		const Vector velocityStep = hasPreviousCommand
+			? velocity - g_floorWallClientCommandState.lastVelocity
+			: Vector();
+
+		if (!replayed)
+		{
+			g_floorWallClientCommandState.transactionId = diagnostic.transactionId;
+			g_floorWallClientCommandState.lastCommandNumber = ucmd->command_number;
+			g_floorWallClientCommandState.lastOrigin = origin;
+			g_floorWallClientCommandState.lastVelocity = velocity;
+			g_floorWallClientCommandState.valid = true;
+		}
+
+		Vector engineAngles;
+		if (I::EngineClient)
+			I::EngineClient->GetViewAngles(engineAngles);
+		const Vector eyeAngles = player->EyeAngles();
+		const Vector physicalEye = player->EyePosition();
+		const Vector netOrigin = player->m_vecOrigin();
+		const Vector renderOrigin = player->GetRenderOrigin();
+		const Vector oldOrigin = player->GetOldOrigin();
+		const Vector baseVelocity = player->m_vecBaseVelocity();
+		const Vector playerMoveOriginMismatch = origin - moveOrigin;
+		const Vector playerMoveVelocityMismatch = velocity - moveVelocity;
+		const Vector commitRelativeOrigin = origin - diagnostic.committedOrigin;
+		const float exitDepth =
+			(origin - diagnostic.exitPlaneOrigin).Dot(
+				diagnostic.exitPlaneNormal);
+		const float exitNormalSpeed =
+			velocity.Dot(diagnostic.exitPlaneNormal);
+		const float exitRightSpeed =
+			velocity.Dot(diagnostic.exitRight);
+		const float exitUpSpeed =
+			velocity.Dot(diagnostic.exitUp);
+		const bool inPrediction = I::Prediction && I::Prediction->InPrediction();
+		const bool firstTimePredicted =
+			I::Prediction && I::Prediction->IsFirstTimePredicted();
+
+		U::LogInfo(
+			"[PortalFloorWallCommand] txn=%u committedCmd=%d cmd=%d commandDelta=%d stage=processmovement-post-original replayed=%s hasPreviousCommand=%s prediction(in=%s firstTime=%s cmdPredicted=%s) frame=%d tick=%d cmdTick=%d tickBase=%d curtime=%.6f simulationTime=%.6f moveType=%u flags=0x%X onGround=%s ground=0x%X origin(abs=(%.3f %.3f %.3f) move=(%.3f %.3f %.3f) net=(%.3f %.3f %.3f) render=(%.3f %.3f %.3f) old=(%.3f %.3f %.3f) physicalEye=(%.3f %.3f %.3f) commitRelative=(%.3f %.3f %.3f) step=(%.3f %.3f %.3f) stepLength=%.3f exitDepth=%.3f playerMoveMismatch=%.4f) velocity(player=(%.3f %.3f %.3f) move=(%.3f %.3f %.3f) base=(%.3f %.3f %.3f) step=(%.3f %.3f %.3f) stepLength=%.3f speed2D=%.3f speed3D=%.3f worldZ=%.3f exitNormal=%.3f exitRight=%.3f exitUp=%.3f playerMoveMismatch=%.4f) angles(cmd=(%.3f %.3f %.3f) move=(%.3f %.3f %.3f) engine=(%.3f %.3f %.3f) eye=(%.3f %.3f %.3f) committed=(%.3f %.3f %.3f)) diagnosticMutation=false behaviorMutation=false.\n",
+			diagnostic.transactionId,
+			diagnostic.committedCommandNumber,
+			ucmd->command_number,
+			commandDelta,
+			BoolText(replayed),
+			BoolText(hasPreviousCommand),
+			BoolText(inPrediction),
+			BoolText(firstTimePredicted),
+			BoolText(ucmd->hasbeenpredicted),
+			I::GlobalVars ? I::GlobalVars->framecount : -1,
+			I::GlobalVars ? I::GlobalVars->tickcount : -1,
+			ucmd->tick_count,
+			player->m_nTickBase(),
+			I::GlobalVars ? I::GlobalVars->curtime : 0.0f,
+			player->m_flSimulationTime(),
+			static_cast<unsigned int>(player->m_MoveType()),
+			player->m_fFlags(),
+			BoolText((player->m_fFlags() & FL_ONGROUND) != 0),
+			player->m_hGroundEntity().ToInt(),
+			origin.x, origin.y, origin.z,
+			moveOrigin.x, moveOrigin.y, moveOrigin.z,
+			netOrigin.x, netOrigin.y, netOrigin.z,
+			renderOrigin.x, renderOrigin.y, renderOrigin.z,
+			oldOrigin.x, oldOrigin.y, oldOrigin.z,
+			physicalEye.x, physicalEye.y, physicalEye.z,
+			commitRelativeOrigin.x,
+			commitRelativeOrigin.y,
+			commitRelativeOrigin.z,
+			originStep.x, originStep.y, originStep.z,
+			VectorLength(originStep),
+			exitDepth,
+			VectorLength(playerMoveOriginMismatch),
+			velocity.x, velocity.y, velocity.z,
+			moveVelocity.x, moveVelocity.y, moveVelocity.z,
+			baseVelocity.x, baseVelocity.y, baseVelocity.z,
+			velocityStep.x, velocityStep.y, velocityStep.z,
+			VectorLength(velocityStep),
+			Speed2D(velocity),
+			VectorLength(velocity),
+			velocity.z,
+			exitNormalSpeed,
+			exitRightSpeed,
+			exitUpSpeed,
+			VectorLength(playerMoveVelocityMismatch),
+			ucmd->viewangles.x,
+			ucmd->viewangles.y,
+			ucmd->viewangles.z,
+			move->m_vecAngles.x,
+			move->m_vecAngles.y,
+			move->m_vecAngles.z,
+			engineAngles.x, engineAngles.y, engineAngles.z,
+			eyeAngles.x, eyeAngles.y, eyeAngles.z,
+			diagnostic.committedViewAngles.x,
+			diagnostic.committedViewAngles.y,
+			diagnostic.committedViewAngles.z);
+	}
 }
 
 CUserCmd* ClientPrediction::GetActiveCommand()
@@ -200,6 +353,9 @@ void ClientPrediction::LogTransactionBoundary(
 	{
 		return;
 	}
+
+	LogFloorWallCommandBoundary(stage, player, ucmd, move);
+	PortalNativeDiagnostics::Movement(stage, player, ucmd, move);
 
 	Vector committedOrigin;
 	Vector committedVelocity;
@@ -445,16 +601,19 @@ void __fastcall ClientPrediction::RunCommand::Detour(void* ecx, void* edx, C_Bas
 		player ? static_cast<C_TerrorPlayer*>(player) : nullptr);
 	CUserCmd* previousActiveCommand = g_activePredictionCommand;
 	g_activePredictionCommand = ucmd;
+	const auto nativeScope=PortalNativeDiagnostics::EnterPredictionScope(player,ucmd,PortalNativeResetPolicy::Phase::RunCommand);
 	ClientPrediction::LogTransactionBoundary(
 		"runcommand-pre-original", player, ucmd, nullptr);
 	Table.Original<FN>(Index)(ecx, edx, player, ucmd, moveHelper);
 	ClientPrediction::LogTransactionBoundary(
 		"runcommand-post-original", player, ucmd, nullptr);
 	g_activePredictionCommand = previousActiveCommand;
+	PortalNativeDiagnostics::LeavePredictionScope(nativeScope);
 }
 
 void __fastcall ClientPrediction::SetupMove::Detour(void* ecx, void* edx, C_BasePlayer* player, CUserCmd* ucmd, IMoveHelper* pHelper, CMoveData* move)
 {
+	const auto nativeScope=PortalNativeDiagnostics::EnterPredictionScope(player,ucmd,PortalNativeResetPolicy::Phase::SetupMove);
 	ClientPrediction::LogTransactionBoundary(
 		"setupmove-pre-original", player, ucmd, move);
 	Table.Original<FN>(Index)(ecx, edx, player, ucmd, pHelper, move);
@@ -463,10 +622,12 @@ void __fastcall ClientPrediction::SetupMove::Detour(void* ecx, void* edx, C_Base
 	TrySyncCommittedAnglesAtPredictionSetup(ucmd, move);
 	ClientPrediction::LogTransactionBoundary(
 		"setupmove-post-commit-handoff", player, ucmd, move);
+	PortalNativeDiagnostics::LeavePredictionScope(nativeScope);
 }
 
 void __fastcall ClientPrediction::FinishMove::Detour(void* ecx, void* edx, C_BasePlayer* player, CUserCmd* ucmd, CMoveData* move)
 {
+	const auto nativeScope=PortalNativeDiagnostics::EnterPredictionScope(player,ucmd,PortalNativeResetPolicy::Phase::FinishMove);
 	ClientPrediction::LogTransactionBoundary(
 		"finishmove-pre-original", player, ucmd, move);
 	const PortalMoveFrameDiagnostics before = G::G_L4D2Portal.m_PortalStage1Probe.CaptureMoveFrame(
@@ -509,6 +670,7 @@ void __fastcall ClientPrediction::FinishMove::Detour(void* ecx, void* edx, C_Bas
 	G::G_L4D2Portal.m_PortalStage1Probe.LogFrameTraceDiagnostics(
 		G::G_L4D2Portal.m_PortalCollisionBridge,
 		after);
+	PortalNativeDiagnostics::LeavePredictionScope(nativeScope);
 }
 
 void ClientPrediction::Init()

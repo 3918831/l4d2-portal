@@ -42,11 +42,231 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.01f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(!shadowDisabled.applied,
         "the disabled shadow predictor must preserve the official eye-history output");
     ExpectNear(shadowDisabled.eyeOrigin.x, 100.0f,
         "the disabled shadow predictor must not move the camera");
+
+    PortalEyeContinuity::ShadowRestartSeedInput restartSeed;
+    restartSeed.enabled = true;
+    restartSeed.candidate = true;
+    restartSeed.transactionId = 17;
+    restartSeed.pendingTransactionId = 17;
+    restartSeed.source =
+        PortalEyeContinuity::ShadowRestartSeedSource::OfficialCommandEnd;
+    restartSeed.eye = Vector(110.0f, 20.0f, 64.0f);
+    restartSeed.velocity = Vector(200.0f, -50.0f, 0.0f);
+    restartSeed.publicationTime = 10.0f;
+    restartSeed.renderTime = 10.02f;
+
+    PortalEyeContinuity::ShadowPredictor restartSeedPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult seededRestart =
+        restartSeedPredictor.Update(
+            true,
+            true,
+            true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f,
+            1.0f / 30.0f,
+            true,
+            false,
+            restartSeed);
+    Expect(seededRestart.restartSeedCandidate,
+        "a published official command-end eye must be reported as a restart-seed candidate");
+    Expect(seededRestart.restartSeedValid,
+        "a finite current seed matching the pending transaction must validate");
+    Expect(seededRestart.restartSeedApplied && seededRestart.applied,
+        "a valid enabled restart seed must replace the baseline on the restart frame");
+    ExpectNear(seededRestart.restartSeedElapsed, 0.02f,
+        "publication-to-render elapsed must be retained when it is inside the horizon");
+    ExpectNear(seededRestart.restartSeedEye.x, 110.0f,
+        "restart diagnostics must expose the unadvanced official command-end eye");
+    ExpectNear(seededRestart.advancedRestartSeedEye.x, 114.0f,
+        "200 units per second for 20 ms must advance the restart seed by four units");
+    ExpectNear(seededRestart.advancedRestartSeedEye.y, 19.0f,
+        "the restart seed must advance independently on every velocity axis");
+    ExpectNear(seededRestart.eyeOrigin.x, 114.0f,
+        "the restart frame must render from the advanced command-end eye");
+
+    const PortalEyeContinuity::ShadowPredictionResult seededDuplicate =
+        restartSeedPredictor.Update(
+            true,
+            true,
+            false,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f,
+            1.0f / 30.0f,
+            false,
+            false);
+    Expect(seededDuplicate.restartSeedApplied && seededDuplicate.applied,
+        "duplicate CalcView calls must retain the applied restart-seed identity");
+    ExpectNear(seededDuplicate.eyeOrigin.x, 114.0f,
+        "duplicate CalcView calls must reuse the same seeded eye without advancing");
+    ExpectNear(seededDuplicate.restartSeedElapsed, 0.02f,
+        "duplicate CalcView calls must reuse the same clamped publication elapsed");
+
+    PortalEyeContinuity::ShadowRestartSeedInput disabledRestartSeed = restartSeed;
+    disabledRestartSeed.enabled = false;
+    PortalEyeContinuity::ShadowPredictor disabledRestartSeedPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult disabledRestart =
+        disabledRestartSeedPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            disabledRestartSeed);
+    Expect(disabledRestart.restartSeedCandidate && !disabledRestart.restartSeedValid,
+        "a candidate must fail closed while the independent restart-seed factor is disabled");
+    Expect(!disabledRestart.restartSeedApplied && !disabledRestart.applied,
+        "a disabled restart seed must preserve the existing restart behavior");
+    ExpectNear(disabledRestart.eyeOrigin.x, 100.0f,
+        "a disabled restart seed must leave the restart baseline unchanged");
+
+    PortalEyeContinuity::ShadowRestartSeedInput nonFiniteRestartSeed = restartSeed;
+    nonFiniteRestartSeed.eye.x = std::nanf("");
+    PortalEyeContinuity::ShadowPredictor nonFiniteRestartSeedPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult nonFiniteRestart =
+        nonFiniteRestartSeedPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            nonFiniteRestartSeed);
+    Expect(nonFiniteRestart.restartSeedCandidate && !nonFiniteRestart.restartSeedValid,
+        "a non-finite restart eye must fail closed");
+    Expect(!nonFiniteRestart.restartSeedApplied && !nonFiniteRestart.applied,
+        "a non-finite restart seed must preserve the existing restart behavior");
+    ExpectNear(nonFiniteRestart.eyeOrigin.x, 100.0f,
+        "a non-finite restart seed must return the baseline eye");
+
+    PortalEyeContinuity::ShadowRestartSeedInput mismatchedRestartSeed = restartSeed;
+    mismatchedRestartSeed.pendingTransactionId = 18;
+    PortalEyeContinuity::ShadowPredictor mismatchedRestartSeedPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult mismatchedRestart =
+        mismatchedRestartSeedPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            mismatchedRestartSeed);
+    Expect(mismatchedRestart.restartSeedCandidate && !mismatchedRestart.restartSeedValid,
+        "a restart seed from another transaction must fail closed");
+    ExpectNear(mismatchedRestart.eyeOrigin.x, 100.0f,
+        "a mismatched restart seed must preserve the baseline eye");
+
+    PortalEyeContinuity::ShadowRestartSeedInput staleRestartSeed = restartSeed;
+    staleRestartSeed.stale = true;
+    PortalEyeContinuity::ShadowPredictor staleRestartSeedPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult staleRestart =
+        staleRestartSeedPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            staleRestartSeed);
+    Expect(staleRestart.restartSeedCandidate && !staleRestart.restartSeedValid,
+        "an explicitly stale restart seed must fail closed");
+    ExpectNear(staleRestart.eyeOrigin.x, 100.0f,
+        "a stale restart seed must preserve the baseline eye");
+
+    PortalEyeContinuity::ShadowPredictor restartMetadataPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult metadataSeeded =
+        restartMetadataPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            restartSeed);
+    Expect(metadataSeeded.restartSeedApplied,
+        "the metadata isolation fixture must begin from a successful seeded restart");
+    const PortalEyeContinuity::ShadowPredictionResult metadataMissingRestart =
+        restartMetadataPredictor.Update(
+            true, true, true,
+            Vector(300.0f, 40.0f, 72.0f),
+            Vector(300.0f, 40.0f, 72.0f),
+            Vector(50.0f, 0.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true,
+            false);
+    Expect(!metadataMissingRestart.restartSeedValid
+            && !metadataMissingRestart.restartSeedApplied,
+        "a missing seed on a new restart must not inherit the previous successful identity");
+    Expect(
+        metadataMissingRestart.restartSeedSource
+            == PortalEyeContinuity::ShadowRestartSeedSource::None,
+        "a missing seed restart must report source none instead of the previous source");
+    ExpectNear(metadataMissingRestart.restartSeedEye.x, 0.0f,
+        "a missing seed restart must clear the previous raw seed eye");
+    ExpectNear(metadataMissingRestart.advancedRestartSeedEye.x, 0.0f,
+        "a missing seed restart must clear the previous advanced seed eye");
+    ExpectNear(metadataMissingRestart.eyeOrigin.x, 300.0f,
+        "a missing seed restart must return its current baseline eye");
+
+    PortalEyeContinuity::ShadowRestartSeedInput currentMismatchedSeed = restartSeed;
+    currentMismatchedSeed.eye = Vector(210.0f, 30.0f, 64.0f);
+    currentMismatchedSeed.transactionId = 21;
+    currentMismatchedSeed.pendingTransactionId = 22;
+    const PortalEyeContinuity::ShadowPredictionResult metadataMismatchedRestart =
+        restartMetadataPredictor.Update(
+            true, true, true,
+            Vector(400.0f, 50.0f, 72.0f),
+            Vector(400.0f, 50.0f, 72.0f),
+            Vector(50.0f, 0.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            currentMismatchedSeed);
+    Expect(!metadataMismatchedRestart.restartSeedValid
+            && !metadataMismatchedRestart.restartSeedApplied,
+        "a mismatched new restart must not inherit previous valid/applied metadata");
+    ExpectNear(metadataMismatchedRestart.restartSeedEye.x, 210.0f,
+        "a rejected restart must expose its current candidate rather than the previous seed");
+    ExpectNear(metadataMismatchedRestart.advancedRestartSeedEye.x, 210.0f,
+        "a rejected restart must not expose the previous advanced seed");
+    ExpectNear(metadataMismatchedRestart.eyeOrigin.x, 400.0f,
+        "a mismatched restart must return its current baseline eye");
+
+    PortalEyeContinuity::ShadowRestartSeedInput negativeElapsedSeed = restartSeed;
+    negativeElapsedSeed.publicationTime = 20.02f;
+    negativeElapsedSeed.renderTime = 20.0f;
+    PortalEyeContinuity::ShadowPredictor negativeElapsedPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult negativeElapsedRestart =
+        negativeElapsedPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            negativeElapsedSeed);
+    ExpectNear(negativeElapsedRestart.restartSeedElapsed, 0.0f,
+        "a publication timestamp after render time must clamp elapsed to zero");
+    ExpectNear(negativeElapsedRestart.eyeOrigin.x, 110.0f,
+        "a negative elapsed must not move the restart seed backward");
+
+    PortalEyeContinuity::ShadowRestartSeedInput overHorizonSeed = restartSeed;
+    overHorizonSeed.publicationTime = 30.0f;
+    overHorizonSeed.renderTime = 30.2f;
+    PortalEyeContinuity::ShadowPredictor overHorizonPredictor;
+    const PortalEyeContinuity::ShadowPredictionResult overHorizonRestart =
+        overHorizonPredictor.Update(
+            true, true, true,
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(100.0f, 20.0f, 64.0f),
+            Vector(200.0f, -50.0f, 0.0f),
+            0.01f, 1.0f / 30.0f, true, false,
+            overHorizonSeed);
+    ExpectNear(overHorizonRestart.restartSeedElapsed, 1.0f / 30.0f,
+        "publication-to-render elapsed must clamp to the one-tick prediction horizon");
+    ExpectNear(overHorizonRestart.eyeOrigin.x, 116.666664f,
+        "an over-horizon seed must advance by exactly one 30 Hz tick");
 
     PortalEyeContinuity::ShadowDiagnosticLogGate shadowLogGate;
     PortalEyeContinuity::ShadowPredictionResult quietShadowFrame;
@@ -114,7 +334,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.01f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(shadowPrimed.restarted,
         "the teleport frame must establish a new exit-space prediction anchor");
     Expect(!shadowPrimed.applied,
@@ -130,7 +351,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.01f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(shadowFrozen.applied,
         "a frozen 30 Hz raw eye must receive render-time extrapolation");
     ExpectNear(shadowFrozen.predictionElapsed, 0.01f,
@@ -152,6 +374,7 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.01f,
             1.0f / 30.0f,
+            false,
             false);
     ExpectNear(shadowDuplicateView.predictionElapsed, 0.01f,
         "additional CalcView calls in one frame must not advance the predictor clock");
@@ -168,7 +391,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.10f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(shadowClamped.horizonClamped,
         "prediction must stop at one simulation tick when the raw eye stalls");
     ExpectNear(shadowClamped.eyeOrigin.x, 120.0f,
@@ -186,7 +410,8 @@ int main()
         Vector(600.0f, 0.0f, 0.0f),
         0.0f,
         1.0f / 30.0f,
-        true);
+        true,
+        false);
     const PortalEyeContinuity::ShadowPredictionResult beforeRawCatchUp =
         continuousCatchUpPredictor.Update(
             true,
@@ -197,7 +422,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             1.0f / 30.0f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     ExpectNear(beforeRawCatchUp.eyeOrigin.x, 120.0f,
         "one frozen simulation tick must advance the shadow eye by twenty units");
 
@@ -211,7 +437,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             1.0f / 750.0f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(duringRawCatchUp.rawAdvanced,
         "the authoritative eye catch-up must remain observable");
     ExpectNear(duringRawCatchUp.eyeOrigin.x, 120.8f,
@@ -227,7 +454,8 @@ int main()
         Vector(600.0f, 0.0f, 0.0f),
         0.0f,
         1.0f / 30.0f,
-        true);
+        true,
+        false);
     partialRawAdvancePredictor.Update(
         true,
         true,
@@ -237,7 +465,8 @@ int main()
         Vector(600.0f, 0.0f, 0.0f),
         1.0f / 30.0f,
         1.0f / 30.0f,
-        true);
+        true,
+        false);
     const PortalEyeContinuity::ShadowPredictionResult shadowPartialRawAdvance =
         partialRawAdvancePredictor.Update(
             true,
@@ -248,7 +477,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.001f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(shadowPartialRawAdvance.rawAdvanced,
         "a small authoritative raw-eye change must remain observable");
     ExpectNear(shadowPartialRawAdvance.predictionElapsed, 0.001f,
@@ -270,7 +500,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.001f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(shadowRebased.rawAdvanced,
         "a new simulation position must rebase the predictor");
     Expect(shadowRebased.applied,
@@ -290,7 +521,8 @@ int main()
             Vector(600.0f, 0.0f, 0.0f),
             0.01f,
             1.0f / 30.0f,
-            true);
+            true,
+            false);
     Expect(!shadowInactive.applied,
         "the predictor must not outlive the official eye-history override");
     ExpectNear(shadowInactive.eyeOrigin.x, 130.0f,
@@ -670,6 +902,238 @@ int main()
         "the disabled path must preserve the unrevised transformed history");
     Expect(projectedControl.planeConstrained,
         "the disabled path must retain the existing BSP compatibility constraint");
+
+    // Test 12 exposed two serial camera owners: State released below the
+    // 0.5-unit tolerance while the independent shadow still carried as much
+    // as 6.649 units.  The single-owner experiment must put the validated
+    // command-end seed into State itself so no second post-State tail exists.
+    PortalEyeContinuity::State singleOwnerState;
+    singleOwnerState.Update(
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        singleOwnerState.PublishTeleport(
+            Translation(0.0f, 0.0f, 0.0f),
+            Vector(0.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            17u,
+            170),
+        "the single-owner fixture must publish a pending teleport");
+
+    PortalEyeContinuity::ShadowRestartSeedInput singleOwnerSeed;
+    singleOwnerSeed.enabled = true;
+    singleOwnerSeed.candidate = true;
+    singleOwnerSeed.transactionId = 17u;
+    singleOwnerSeed.pendingTransactionId = 17u;
+    singleOwnerSeed.source =
+        PortalEyeContinuity::ShadowRestartSeedSource::OfficialCommandEnd;
+    singleOwnerSeed.eye = Vector(110.0f, 0.0f, 64.0f);
+    singleOwnerSeed.velocity = Vector(200.0f, 0.0f, 0.0f);
+    singleOwnerSeed.publicationTime = 10.0f;
+    singleOwnerSeed.renderTime = 10.02f;
+
+    const PortalEyeContinuity::UpdateResult singleOwnerConsumed =
+        singleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.01f,
+            1.0f / 30.0f,
+            singleOwnerSeed);
+    Expect(singleOwnerConsumed.singleOwnerSeedCandidate,
+        "the matching command-end seed must be observable at State ownership transfer");
+    Expect(singleOwnerConsumed.singleOwnerSeedValid
+            && singleOwnerConsumed.singleOwnerSeedApplied,
+        "State must accept the finite current seed for the matching pending transaction");
+    ExpectNear(singleOwnerConsumed.singleOwnerSeedElapsed, 0.02f,
+        "State must retain publication-to-render elapsed inside one tick");
+    ExpectNear(singleOwnerConsumed.singleOwnerSeedEye.x, 110.0f,
+        "State diagnostics must retain the unadvanced command-end eye");
+    ExpectNear(singleOwnerConsumed.singleOwnerAdvancedSeedEye.x, 114.0f,
+        "State must advance the command-end eye across the render gap exactly once");
+    ExpectNear(singleOwnerConsumed.eyeOrigin.x, 113.0f,
+        "the seeded State owner must apply its official one-frame catch-up without a shadow owner");
+
+    const PortalEyeContinuity::UpdateResult singleOwnerReleased =
+        singleOwnerState.Update(
+            true,
+            Vector(106.0f, 0.0f, 64.0f),
+            Vector(106.0f, 0.0f, 64.0f),
+            1.0f);
+    Expect(singleOwnerReleased.releasedOverride,
+        "the seeded State owner must release directly to the engine eye");
+    ExpectNear(singleOwnerReleased.eyeOrigin.x, 106.0f,
+        "single-owner release must have no second-layer residual or tail");
+
+    PortalEyeContinuity::State rejectedSingleOwnerState;
+    rejectedSingleOwnerState.Update(
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        rejectedSingleOwnerState.PublishTeleport(
+            Translation(0.0f, 0.0f, 0.0f),
+            Vector(0.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            18u,
+            180),
+        "the rejected single-owner fixture must publish a pending teleport");
+    PortalEyeContinuity::ShadowRestartSeedInput mismatchedSingleOwnerSeed =
+        singleOwnerSeed;
+    mismatchedSingleOwnerSeed.transactionId = 18u;
+    mismatchedSingleOwnerSeed.pendingTransactionId = 19u;
+    const PortalEyeContinuity::UpdateResult mismatchedSingleOwner =
+        rejectedSingleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.01f,
+            1.0f / 30.0f,
+            mismatchedSingleOwnerSeed);
+    Expect(mismatchedSingleOwner.singleOwnerSeedCandidate
+            && !mismatchedSingleOwner.singleOwnerSeedValid
+            && !mismatchedSingleOwner.singleOwnerSeedApplied,
+        "a single-owner seed from another pending transaction must fail closed");
+
+    PortalEyeContinuity::State staleSingleOwnerState;
+    staleSingleOwnerState.Update(
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        staleSingleOwnerState.PublishTeleport(
+            Translation(0.0f, 0.0f, 0.0f),
+            Vector(0.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            21u,
+            210),
+        "the stale single-owner fixture must publish a pending teleport");
+    PortalEyeContinuity::ShadowRestartSeedInput staleSingleOwnerSeed =
+        singleOwnerSeed;
+    staleSingleOwnerSeed.transactionId = 21u;
+    staleSingleOwnerSeed.pendingTransactionId = 21u;
+    staleSingleOwnerSeed.stale = true;
+    const PortalEyeContinuity::UpdateResult staleSingleOwner =
+        staleSingleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.01f,
+            1.0f / 30.0f,
+            staleSingleOwnerSeed);
+    Expect(!staleSingleOwner.singleOwnerSeedValid
+            && !staleSingleOwner.singleOwnerSeedApplied,
+        "a stale single-owner seed must fail closed");
+
+    PortalEyeContinuity::State nonFiniteSingleOwnerState;
+    nonFiniteSingleOwnerState.Update(
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        nonFiniteSingleOwnerState.PublishTeleport(
+            Translation(0.0f, 0.0f, 0.0f),
+            Vector(0.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            19u,
+            190),
+        "the non-finite single-owner fixture must publish a pending teleport");
+    PortalEyeContinuity::ShadowRestartSeedInput nonFiniteSingleOwnerSeed =
+        singleOwnerSeed;
+    nonFiniteSingleOwnerSeed.transactionId = 19u;
+    nonFiniteSingleOwnerSeed.pendingTransactionId = 19u;
+    nonFiniteSingleOwnerSeed.eye.x = std::nanf("");
+    const PortalEyeContinuity::UpdateResult nonFiniteSingleOwner =
+        nonFiniteSingleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.01f,
+            1.0f / 30.0f,
+            nonFiniteSingleOwnerSeed);
+    Expect(!nonFiniteSingleOwner.singleOwnerSeedValid
+            && !nonFiniteSingleOwner.singleOwnerSeedApplied,
+        "a non-finite single-owner seed must fail closed");
+
+    PortalEyeContinuity::State negativeElapsedSingleOwnerState;
+    negativeElapsedSingleOwnerState.Update(
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        negativeElapsedSingleOwnerState.PublishTeleport(
+            Translation(0.0f, 0.0f, 0.0f),
+            Vector(0.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            22u,
+            220),
+        "the negative-elapsed single-owner fixture must publish a pending teleport");
+    PortalEyeContinuity::ShadowRestartSeedInput negativeElapsedSingleOwnerSeed =
+        singleOwnerSeed;
+    negativeElapsedSingleOwnerSeed.transactionId = 22u;
+    negativeElapsedSingleOwnerSeed.pendingTransactionId = 22u;
+    negativeElapsedSingleOwnerSeed.publicationTime = 30.02f;
+    negativeElapsedSingleOwnerSeed.renderTime = 30.0f;
+    const PortalEyeContinuity::UpdateResult negativeElapsedSingleOwner =
+        negativeElapsedSingleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.01f,
+            1.0f / 30.0f,
+            negativeElapsedSingleOwnerSeed);
+    Expect(negativeElapsedSingleOwner.singleOwnerSeedApplied,
+        "a finite negative-elapsed seed remains usable after clamping");
+    ExpectNear(negativeElapsedSingleOwner.singleOwnerSeedElapsed, 0.0f,
+        "publication after render time must not move the State seed backward");
+
+    PortalEyeContinuity::State clampedSingleOwnerState;
+    clampedSingleOwnerState.Update(
+        true,
+        Vector(100.0f, 0.0f, 64.0f),
+        Vector(100.0f, 0.0f, 64.0f),
+        0.01f);
+    Expect(
+        clampedSingleOwnerState.PublishTeleport(
+            Translation(0.0f, 0.0f, 0.0f),
+            Vector(0.0f, 0.0f, 0.0f),
+            Vector(1.0f, 0.0f, 0.0f),
+            20u,
+            200),
+        "the clamped single-owner fixture must publish a pending teleport");
+    PortalEyeContinuity::ShadowRestartSeedInput clampedSingleOwnerSeed =
+        singleOwnerSeed;
+    clampedSingleOwnerSeed.transactionId = 20u;
+    clampedSingleOwnerSeed.pendingTransactionId = 20u;
+    clampedSingleOwnerSeed.publicationTime = 20.0f;
+    clampedSingleOwnerSeed.renderTime = 20.2f;
+    const PortalEyeContinuity::UpdateResult clampedSingleOwner =
+        clampedSingleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.01f,
+            1.0f / 30.0f,
+            clampedSingleOwnerSeed);
+    ExpectNear(clampedSingleOwner.singleOwnerSeedElapsed, 1.0f / 30.0f,
+        "single-owner publication-to-render advance must not exceed one command tick");
+    const PortalEyeContinuity::UpdateResult clampedSingleOwnerDuplicate =
+        clampedSingleOwnerState.Update(
+            true,
+            Vector(105.0f, 0.0f, 64.0f),
+            Vector(105.0f, 0.0f, 64.0f),
+            0.0f,
+            1.0f / 30.0f,
+            clampedSingleOwnerSeed);
+    Expect(!clampedSingleOwnerDuplicate.consumedPendingTeleport
+            && !clampedSingleOwnerDuplicate.singleOwnerSeedApplied,
+        "duplicate CalcView consumption must not apply the command-end seed twice");
 
     std::cout << "PortalEyeContinuity tests passed\n";
     return 0;

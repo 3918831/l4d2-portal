@@ -3,12 +3,32 @@
 #include "PortalRenderFixRenderer.h"
 #include "PortalTransitionDecision.h"
 #include "PortalPlacementFloorSnap.h"
+#include "PortalNativeDiagnostics.h"
+#include "PortalFallWrite.h"
 #include "L4D2_Portal.h"
+#include "../Hooks/Input/InputAngles.h"
 
 #include "../SDK/L4D2/Includes/convar.h"
 #include "../Util/Logger/Logger.h"
 
 #include <cstdlib>
+
+CON_COMMAND(portal_diag_native, "Opt-in detailed native prediction/fall diagnostics: portal_diag_native <0|1>")
+{
+    if(args.ArgC()<2)PortalNativeDiagnostics::Report();
+    else PortalNativeDiagnostics::SetEnabled(std::atoi(args.Arg(1))!=0);
+}
+
+CON_COMMAND(portal_diag_nativefall, "Read-only capture of the next ordinary descending airborne interval (requires portal_diag_native 1)")
+{
+    PortalNativeDiagnostics::ArmNormalFall();
+}
+
+CON_COMMAND(portal_server_fallfix, "Single-factor official signed fall update after portal commit: portal_server_fallfix <0|1>")
+{
+    if(args.ArgC()<2)PortalFallWrite::Report();
+    else PortalFallWrite::SetEnabled(std::atoi(args.Arg(1))!=0);
+}
 
 CON_COMMAND(portal_bsp_phase1, "Enable unrestricted Phase 1 BSP carving: portal_bsp_phase1 <0|1>")
 {
@@ -31,6 +51,8 @@ CON_COMMAND(portal_bsp_phase1, "Enable unrestricted Phase 1 BSP carving: portal_
 CON_COMMAND(portal_bsp_status, "Print Phase 1 BSP carving status")
 {
     PortalBspPhase1::LogStatus("console-status");
+    PortalFallWrite::Report();
+    PortalNativeDiagnostics::Report();
     U::PortalFileLog::WriteAlwaysFormat(
         "[PortalFileLog] flush reason=portal_bsp_status build=%s modulePath=%s.\n",
         U::PortalFileLog::GetBuildId(),
@@ -107,6 +129,52 @@ CON_COMMAND(portal_visual_nearclip, "Toggle portal-aware main-view near clip: po
     U::LogInfo("[PortalBsp][Command] command=portal_visual_nearclip result=true nearClipFix=%s.\n",
         enabled ? "true" : "false");
     PortalBspPhase1::LogStatus("console-nearclip-change");
+}
+
+CON_COMMAND(portal_visual_reorientation,
+    "Toggle official full-roll preservation and render-frame reorientation: portal_visual_reorientation <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        Hooks::InputAngles::LogLateDiagnosticProbe();
+        const bool signatureValidated = Hooks::InputAngles::IsSignatureValidated();
+        const bool abiValidated = Hooks::InputAngles::IsAbiValidated();
+        const bool active = G::G_L4D2Portal.m_PortalTransition.IsPortalViewReorientationActive();
+        const std::uint32_t activeTransactionId = active
+            ? G::G_L4D2Portal.m_PortalTransition.GetPortalViewReorientationTransactionId()
+            : 0;
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_reorientation enabled=%s hookValidated=%s signatureValidated=%s abiValidated=%s activeTxn=%u active=%s usage='portal_visual_reorientation <0|1>' curve=%s timeScale=%.3f.\n",
+            PortalTransitionDecision::GetPortalViewReorientationEnabled() ? "true" : "false",
+            signatureValidated && abiValidated ? "true" : "false",
+            signatureValidated ? "true" : "false",
+            abiValidated ? "true" : "false",
+            activeTransactionId,
+            active ? "true" : "false",
+            PortalViewReorientation::GetCurveName(),
+            PortalViewReorientation::GetTimeScale());
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    if (PortalTransitionDecision::GetPortalViewReorientationEnabled() != enabled)
+        G::G_L4D2Portal.m_PortalTransition.ResetPortalViewReorientation("console-view-reorientation-ab-switch");
+    PortalTransitionDecision::SetPortalViewReorientationEnabled(enabled);
+
+    const bool signatureValidated = Hooks::InputAngles::IsSignatureValidated();
+    const bool abiValidated = Hooks::InputAngles::IsAbiValidated();
+    const bool active = G::G_L4D2Portal.m_PortalTransition.IsPortalViewReorientationActive();
+    const std::uint32_t activeTransactionId = active
+        ? G::G_L4D2Portal.m_PortalTransition.GetPortalViewReorientationTransactionId()
+        : 0;
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_reorientation result=true enabled=%s hookValidated=%s signatureValidated=%s abiValidated=%s activeTxn=%u active=%s scope=view-angles-only physicsMutation=false curve=%s timeScale=%.3f.\n",
+        PortalTransitionDecision::GetPortalViewReorientationEnabled() ? "true" : "false",
+        signatureValidated && abiValidated ? "true" : "false",
+        signatureValidated ? "true" : "false",
+        abiValidated ? "true" : "false",
+        activeTransactionId,
+        active ? "true" : "false",
+        PortalViewReorientation::GetCurveName(),
+        PortalViewReorientation::GetTimeScale());
 }
 
 CON_COMMAND(portal_visual_stencilproxy_guard, "Toggle extreme-near stencil-proxy guard: portal_visual_stencilproxy_guard <0|1>")
@@ -220,6 +288,45 @@ CON_COMMAND(portal_visual_shadowpredictor, "Toggle the validated render-time eye
     PortalBspPhase1::LogStatus("console-shadowpredictor-change");
 }
 
+CON_COMMAND(portal_visual_crossleafhandoff, "Toggle geometry-clear cross-leaf render-eye handoff: portal_visual_crossleafhandoff <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_crossleafhandoff current=%s usage='portal_visual_crossleafhandoff <0|1>'.\n",
+            PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled()
+                ? "true"
+                : "false");
+        PortalBspPhase1::LogStatus("console-cross-leaf-handoff-query");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    PortalTransitionDecision::SetPortalEyeCrossLeafHandoffEnabled(enabled);
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_crossleafhandoff result=true enabled=%s scope=render-eye-only geometryContract=bidirectional-world-props-clear physicsMutation=false.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-cross-leaf-handoff-change");
+}
+
+CON_COMMAND(portal_visual_commitseed, "Toggle the official command-end seed for the first post-commit render eye: portal_visual_commitseed <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_commitseed current=%s usage='portal_visual_commitseed <0|1>' scope=first-render-eye-only physicsMutation=false.\n",
+            PortalTransitionDecision::GetPortalVisualCommitSeedEnabled()
+                ? "true"
+                : "false");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    G::G_L4D2Portal.m_PortalTransition.SetPortalVisualCommitSeedEnabled(
+        enabled,
+        "console-commit-seed-ab-edge");
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_commitseed result=true enabled=%s scope=first-render-eye-only physicsMutation=false.\n",
+        enabled ? "true" : "false");
+    PortalBspPhase1::LogStatus("console-commit-seed-change");
+}
+
 CON_COMMAND(portal_visual_shadowtail, "Toggle one-tick shadow-predictor release handoff: portal_visual_shadowtail <0|1>")
 {
     if (args.ArgC() < 2)
@@ -234,6 +341,29 @@ CON_COMMAND(portal_visual_shadowtail, "Toggle one-tick shadow-predictor release 
     U::LogInfo("[PortalBsp][Command] command=portal_visual_shadowtail result=true shadowReleaseTail=%s scope=render-eye-only horizon=one-runtime-tick physicsMutation=false.\n",
         enabled ? "true" : "false");
     PortalBspPhase1::LogStatus("console-shadowtail-change");
+}
+
+CON_COMMAND(portal_visual_singleeyehistory, "Toggle single-owner portal eye history: portal_visual_singleeyehistory <0|1>")
+{
+    if (args.ArgC() < 2)
+    {
+        U::LogInfo("[PortalBsp][Command] command=portal_visual_singleeyehistory current=%s activeOwner=%s usage='portal_visual_singleeyehistory <0|1>' scope=render-eye-history-only physicsMutation=false.\n",
+            PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled()
+                ? "true" : "false",
+            PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled()
+                ? "state-only" : "state-plus-shadow");
+        PortalBspPhase1::LogStatus("console-single-eye-history-query");
+        return;
+    }
+
+    const bool enabled = std::atoi(args.Arg(1)) != 0;
+    G::G_L4D2Portal.m_PortalTransition.SetPortalEyeSingleOwnerEnabled(
+        enabled,
+        "console-single-eye-history-ab-edge");
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_singleeyehistory result=true enabled=%s activeOwner=%s scope=render-eye-history-only physicsMutation=false.\n",
+        enabled ? "true" : "false",
+        enabled ? "state-only" : "state-plus-shadow");
+    PortalBspPhase1::LogStatus("console-single-eye-history-change");
 }
 
 CON_COMMAND(portal_visual_projectedhistoryrebase, "Toggle projected-commit pre-transform eye-history rebase: portal_visual_projectedhistoryrebase <0|1>")
@@ -283,7 +413,7 @@ CON_COMMAND(portal_visual_transactiondiag, "Toggle commit-through-plus-1 portal 
 
     const bool enabled = std::atoi(args.Arg(1)) != 0;
     PortalTransitionDecision::SetPortalTransactionDiagnosticsEnabled(enabled);
-    U::LogInfo("[PortalBsp][Command] command=portal_visual_transactiondiag result=true transactionDiagnostics=%s predictionWindow=commit-plus-1 behaviorMutation=false.\n",
+    U::LogInfo("[PortalBsp][Command] command=portal_visual_transactiondiag result=true transactionDiagnostics=%s predictionWindow=commit-plus-1 floorWallDiagnosticWindow=commit-through-plus-32 floorWallDiagnosticScope=floor-entry-to-wall-exit-only behaviorMutation=false.\n",
         enabled ? "true" : "false");
     PortalBspPhase1::LogStatus("console-transactiondiag-change");
 }

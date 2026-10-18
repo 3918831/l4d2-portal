@@ -31,6 +31,23 @@ void PortalEyeContinuity::ShadowPredictor::Reset()
     m_initialized = false;
     m_releaseTailActive = false;
     m_releaseTailSawRawAdvance = false;
+    m_restartSeedEye = Vector();
+    m_advancedRestartSeedEye = Vector();
+    m_restartSeedElapsed = 0.0f;
+    m_restartSeedSource = ShadowRestartSeedSource::None;
+    m_restartSeedAppliedThisFrame = false;
+}
+
+const char* PortalEyeContinuity::ShadowRestartSeedSourceName(
+    ShadowRestartSeedSource source)
+{
+    switch (source)
+    {
+    case ShadowRestartSeedSource::None: return "none";
+    case ShadowRestartSeedSource::OfficialCommandEnd:
+        return "official-command-end";
+    }
+    return "unknown";
 }
 
 const char* PortalEyeContinuity::ShadowReleaseTailEndReasonName(
@@ -56,8 +73,18 @@ PortalEyeContinuity::ShadowPredictor::Update(
     float frameTime,
     float predictionHorizon,
     bool advanceFrameClock,
-    bool releaseTailEnabled)
+    bool releaseTailEnabled,
+    const ShadowRestartSeedInput& restartSeed)
 {
+    if (restart || advanceFrameClock)
+    {
+        m_restartSeedEye = Vector();
+        m_advancedRestartSeedEye = Vector();
+        m_restartSeedElapsed = 0.0f;
+        m_restartSeedSource = ShadowRestartSeedSource::None;
+        m_restartSeedAppliedThisFrame = false;
+    }
+
     ShadowPredictionResult result;
     result.eyeOrigin = baselineEye;
     result.baselineEye = baselineEye;
@@ -69,11 +96,21 @@ PortalEyeContinuity::ShadowPredictor::Update(
     result.initializedBefore = m_initialized;
     result.predictionElapsedBefore = m_predictionElapsed;
     result.shadowEyeBefore = m_shadowEye;
+    result.restartSeedEnabled = restartSeed.enabled;
+    result.restartSeedCandidate = restartSeed.candidate;
+    result.restartSeedApplied = m_restartSeedAppliedThisFrame;
+    result.restartSeedValid = m_restartSeedAppliedThisFrame;
+    result.restartSeedEye = m_restartSeedEye;
+    result.advancedRestartSeedEye = m_advancedRestartSeedEye;
+    result.restartSeedElapsed = m_restartSeedElapsed;
+    result.restartSeedSource = m_restartSeedSource;
 
     if (!enabled
         || !IsFiniteVector(baselineEye)
         || !IsFiniteVector(rawPhysicalEye)
-        || !IsFiniteVector(velocity))
+        || !IsFiniteVector(velocity)
+        || !std::isfinite(frameTime)
+        || !std::isfinite(predictionHorizon))
     {
         Reset();
         result.initializedAfter = m_initialized;
@@ -87,7 +124,9 @@ PortalEyeContinuity::ShadowPredictor::Update(
 
     if (!continuityActive)
     {
-        if (!releaseTailEnabled || !m_initialized || safeHorizon <= 0.0f)
+        if (!releaseTailEnabled
+            || !m_initialized
+            || safeHorizon <= 0.0f)
         {
             Reset();
             result.initializedAfter = m_initialized;
@@ -115,6 +154,7 @@ PortalEyeContinuity::ShadowPredictor::Update(
         result.releaseTailResidual = result.predictionOffset.Lenght();
         result.releaseTailSawRawAdvance = m_releaseTailSawRawAdvance;
         result.releaseTailElapsed = m_releaseTailElapsed;
+
         if (m_releaseTailSawRawAdvance
             && result.releaseTailResidual <= kEngineCatchUpTolerance)
         {
@@ -200,6 +240,48 @@ PortalEyeContinuity::ShadowPredictor::Update(
         m_predictionElapsed = 0.0f;
         m_initialized = true;
         result.restarted = true;
+        result.restartSeedSource = restartSeed.source;
+        result.restartSeedEye = restartSeed.eye;
+        result.advancedRestartSeedEye = restartSeed.eye;
+        const bool finiteSeed = IsFiniteVector(restartSeed.eye)
+            && IsFiniteVector(restartSeed.velocity)
+            && std::isfinite(restartSeed.publicationTime)
+            && std::isfinite(restartSeed.renderTime);
+        const bool matchingSeed = restartSeed.transactionId != 0
+            && restartSeed.transactionId == restartSeed.pendingTransactionId;
+        const bool validSeed = restartSeed.enabled
+            && restartSeed.candidate
+            && !restartSeed.stale
+            && matchingSeed
+            && restartSeed.source != ShadowRestartSeedSource::None
+            && finiteSeed;
+        if (validSeed)
+        {
+            const float publicationElapsed =
+                restartSeed.renderTime - restartSeed.publicationTime;
+            const float clampedElapsed = std::min(
+                std::max(0.0f, publicationElapsed),
+                safeHorizon);
+            const Vector advancedSeedEye =
+                restartSeed.eye + restartSeed.velocity * clampedElapsed;
+            if (IsFiniteVector(advancedSeedEye))
+            {
+                m_shadowEye = advancedSeedEye;
+                m_predictionElapsed = clampedElapsed;
+                m_restartSeedEye = restartSeed.eye;
+                m_advancedRestartSeedEye = advancedSeedEye;
+                m_restartSeedElapsed = clampedElapsed;
+                m_restartSeedSource = restartSeed.source;
+                m_restartSeedAppliedThisFrame = true;
+                result.restartSeedValid = true;
+                result.restartSeedApplied = true;
+                result.restartSeedElapsed = clampedElapsed;
+                result.advancedRestartSeedEye = advancedSeedEye;
+                result.eyeOrigin = advancedSeedEye;
+                result.applied = true;
+                result.predictionElapsed = m_predictionElapsed;
+            }
+        }
         result.shadowEyeAfter = m_shadowEye;
         result.initializedAfter = true;
         return result;
@@ -356,7 +438,9 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
     bool enabled,
     const Vector& rawPhysicalEye,
     const Vector& originalViewEye,
-    float frameTime)
+    float frameTime,
+    float predictionHorizon,
+    const ShadowRestartSeedInput& singleOwnerSeed)
 {
     UpdateResult result;
     result.eyeOrigin = originalViewEye;
@@ -378,6 +462,9 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
     result.activeExitPlaneNormal = m_activeExitPlaneNormal;
     result.traversalEpoch = m_pendingTraversalEpoch;
     result.commandNumber = m_activeCommandNumber;
+    result.singleOwnerSeedCandidate = singleOwnerSeed.candidate;
+    result.singleOwnerSeedEye = singleOwnerSeed.eye;
+    result.singleOwnerAdvancedSeedEye = singleOwnerSeed.eye;
 
     const auto finishTrace = [this, &result]()
     {
@@ -439,6 +526,45 @@ PortalEyeContinuity::UpdateResult PortalEyeContinuity::State::Update(
         result.previousRawEyeAfterTransform = m_previousRawEye;
         result.continuityEyeAfterTransform = m_continuityEye;
         m_activeCommandNumber = m_pendingCommandNumber;
+
+        const bool finiteSeed = IsFiniteVector(singleOwnerSeed.eye)
+            && IsFiniteVector(singleOwnerSeed.velocity)
+            && std::isfinite(singleOwnerSeed.publicationTime)
+            && std::isfinite(singleOwnerSeed.renderTime)
+            && std::isfinite(predictionHorizon);
+        const bool matchingSeed = singleOwnerSeed.transactionId != 0
+            && singleOwnerSeed.transactionId
+                == singleOwnerSeed.pendingTransactionId;
+        result.singleOwnerSeedValid = singleOwnerSeed.enabled
+            && singleOwnerSeed.candidate
+            && !singleOwnerSeed.stale
+            && matchingSeed
+            && singleOwnerSeed.source != ShadowRestartSeedSource::None
+            && finiteSeed;
+        if (result.singleOwnerSeedValid)
+        {
+            const float safeHorizon = std::min(
+                std::max(0.0f, predictionHorizon),
+                kMaximumShadowPredictionHorizon);
+            result.singleOwnerSeedElapsed = std::min(
+                std::max(
+                    0.0f,
+                    singleOwnerSeed.renderTime
+                        - singleOwnerSeed.publicationTime),
+                safeHorizon);
+            result.singleOwnerAdvancedSeedEye = singleOwnerSeed.eye
+                + singleOwnerSeed.velocity * result.singleOwnerSeedElapsed;
+            if (IsFiniteVector(result.singleOwnerAdvancedSeedEye))
+            {
+                m_continuityEye = result.singleOwnerAdvancedSeedEye;
+                result.singleOwnerSeedApplied = true;
+            }
+            else
+            {
+                result.singleOwnerSeedValid = false;
+            }
+        }
+        result.singleOwnerStateEyeAfterSeed = m_continuityEye;
         m_hasPendingTeleport = false;
         m_pendingHistoryRebase = false;
         m_pendingHistoryRebaseDelta = Vector();

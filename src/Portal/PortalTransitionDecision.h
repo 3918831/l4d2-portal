@@ -41,8 +41,51 @@ struct PortalServerRunCommandClassification
     int commandDelta = 0;
 };
 
+struct PortalVisualCommitSeedEdgeAction
+{
+    bool changed = false;
+    bool clearPendingSeed = false;
+    bool clearSeedDerivedPredictor = false;
+};
+
+struct PortalEyeSingleOwnerEdgeAction
+{
+    bool changed = false;
+    bool resetEyeHistoryState = false;
+    bool resetShadowState = false;
+    bool clearPendingSeed = false;
+    bool resetTransactionVisualState = false;
+};
+
 namespace PortalTransitionDecision
 {
+    struct PortalEyeCrossLeafHandoffFrameDecision
+    {
+        bool allowCandidate = false;
+        bool emitAllowEdge = false;
+        bool emitRejectEdge = false;
+    };
+
+    class PortalEyeCrossLeafHandoffController
+    {
+    public:
+        PortalEyeCrossLeafHandoffFrameDecision EvaluateFrame(
+            bool enabled,
+            bool leafMismatch,
+            bool geometryClear,
+            bool runtimeSafetyFailure);
+        bool ConsumeHorizonExpiryProbeEdge(
+            bool diagnosticsEnabled,
+            bool releaseTailEnded,
+            bool horizonExpired);
+        void Reset();
+        bool IsAuthorized() const;
+
+    private:
+        bool m_authorized = false;
+        bool m_horizonExpiryProbeEmitted = false;
+    };
+
     bool RequiresControlledNoclip(PortalTransitionPhase phase);
     bool ShouldApplyLegacyBridgeMovement(PortalTransitionPhase phase);
     bool ShouldRunOriginalPlayerMove(PortalTransitionPhase phase);
@@ -50,7 +93,6 @@ namespace PortalTransitionDecision
     bool ShouldRestoreWalkOnProbeLoss(PortalTransitionPhase phase);
     bool ShouldReleaseExitControlledMove(float frontDistance, bool insideAperture);
     bool ShouldAllowTraversalEntry(PortalTransitionPhase phase, float currentTime, float cooldownUntil);
-    float ComputeExitRearmCooldownUntil(float releaseTime, float cooldownDuration);
     bool IsCommittedTeleportPredictionSyncPhase(PortalTransitionPhase phase);
     bool ShouldSyncCommittedViewAnglesAtPredictionSetup(
         PortalTransitionPhase phase,
@@ -70,10 +112,20 @@ namespace PortalTransitionDecision
     void SetServerPortalCommandAngleFixEnabled(bool enabled);
     bool GetPortalTransactionDiagnosticsEnabled();
     void SetPortalTransactionDiagnosticsEnabled(bool enabled);
+    bool GetPortalViewReorientationEnabled();
+    void SetPortalViewReorientationEnabled(bool enabled);
+    bool GetPortalEyeCrossLeafHandoffEnabled();
+    void SetPortalEyeCrossLeafHandoffEnabled(bool enabled);
+    bool ShouldAllowPortalEyeCrossLeafHandoff(
+        bool enabled,
+        bool leafMismatch,
+        bool geometryClear);
     bool GetGroundLiveCommitEnabled();
     void SetGroundLiveCommitEnabled(bool enabled);
     bool ShouldUseProjectedPlaneCrossing(bool groundLiveCommitEnabled, bool onGround);
     bool IsPortalPredictionDiagnosticCommandDelta(int commandDelta);
+    bool IsFloorToWallDiagnosticOrientation(float entryNormalZ, float exitNormalZ);
+    bool IsFloorToWallDiagnosticCommandDelta(int commandDelta);
     bool IsWithinGModWallPortalBounds(float frontDistance, float feetLocalRight, float feetLocalUp);
     bool IsViewNearPortalPlane(
         float forwardDistance,
@@ -118,8 +170,32 @@ namespace PortalTransitionDecision
     void SetPortalEyeContinuityEnabled(bool enabled);
     bool GetPortalEyeShadowPredictorEnabled();
     void SetPortalEyeShadowPredictorEnabled(bool enabled);
+    bool GetPortalVisualCommitSeedEnabled();
+    void SetPortalVisualCommitSeedEnabled(bool enabled);
+    PortalVisualCommitSeedEdgeAction DecidePortalVisualCommitSeedEdgeAction(
+        bool wasEnabled,
+        bool enabled);
     bool GetPortalEyeShadowReleaseTailEnabled();
     void SetPortalEyeShadowReleaseTailEnabled(bool enabled);
+    bool GetPortalEyeSingleOwnerEnabled();
+    void SetPortalEyeSingleOwnerEnabled(bool enabled);
+    PortalEyeSingleOwnerEdgeAction DecidePortalEyeSingleOwnerEdgeAction(
+        bool wasEnabled,
+        bool enabled);
+    bool ShouldFailClosedForMissingPortalEyeSafetyInterface(
+        bool shadowViewActive,
+        bool engineTraceAvailable);
+    bool ArePortalEyeBidirectionalSafetyTracesClear(
+        bool forwardAvailable,
+        float forwardFraction,
+        bool forwardStartSolid,
+        bool forwardAllSolid,
+        bool forwardEndFinite,
+        bool reverseAvailable,
+        float reverseFraction,
+        bool reverseStartSolid,
+        bool reverseAllSolid,
+        bool reverseEndFinite);
     bool GetProjectedEyeHistoryRebaseEnabled();
     void SetProjectedEyeHistoryRebaseEnabled(bool enabled);
     bool ShouldApplyEntryCameraHandoff(
@@ -140,6 +216,14 @@ namespace PortalTransitionDecision
     bool TryParseExitClearanceMode(const char* text, PortalExitClearanceMode* mode);
 
     bool ShouldCommitPlaneCrossing(
+        float previousSignedDepth,
+        float currentSignedDepth,
+        bool hasPreviousDepth,
+        bool insideAperture,
+        bool movingIntoPortal);
+
+    bool ShouldCommitExitRearmCatchup(
+        bool candidateIsReleasedExitPortal,
         float previousSignedDepth,
         float currentSignedDepth,
         bool hasPreviousDepth,

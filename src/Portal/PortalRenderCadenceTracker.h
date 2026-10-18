@@ -23,6 +23,10 @@ namespace PortalRenderCadence
         Vec3 networkOrigin;
         Vec3 oldOrigin;
         Vec3 velocity;
+        Vec3 calcViewInputAngles;
+        Vec3 originalViewAngles;
+        Vec3 appliedViewAngles;
+        Vec3 finalViewAngles;
         float simulationTime = 0.0f;
         float frameTime = 0.0f;
         int frameCount = -1;
@@ -50,6 +54,7 @@ namespace PortalRenderCadence
         int networkOriginFrozenFrames = 0;
         int oldOriginFrozenFrames = 0;
         int simulationTimeFrozenFrames = 0;
+        int finalViewAnglesFrozenFrames = 0;
         int maxRawConsecutiveFrozenFrames = 0;
         int maxOriginalConsecutiveFrozenFrames = 0;
         int maxAppliedConsecutiveFrozenFrames = 0;
@@ -60,6 +65,7 @@ namespace PortalRenderCadence
         int maxNetworkOriginConsecutiveFrozenFrames = 0;
         int maxOldOriginConsecutiveFrozenFrames = 0;
         int maxSimulationTimeConsecutiveFrozenFrames = 0;
+        int maxFinalViewAnglesConsecutiveFrozenFrames = 0;
         float maxRawDeltaLength = 0.0f;
         float maxOriginalDeltaLength = 0.0f;
         float maxAppliedDeltaLength = 0.0f;
@@ -70,6 +76,7 @@ namespace PortalRenderCadence
         float maxNetworkOriginDeltaLength = 0.0f;
         float maxOldOriginDeltaLength = 0.0f;
         float maxSimulationTimeDelta = 0.0f;
+        float maxFinalViewAngleDeltaLength = 0.0f;
         int speedSampleFrames = 0;
         int eyeHistoryActiveFrames = 0;
         int shadowPredictorAppliedFrames = 0;
@@ -111,6 +118,7 @@ namespace PortalRenderCadence
         bool networkOriginFrozen = false;
         bool oldOriginFrozen = false;
         bool simulationTimeFrozen = false;
+        bool finalViewAnglesFrozen = false;
         bool eyeHistoryChanged = false;
         bool shadowPredictorChanged = false;
         bool postEyeHistory = false;
@@ -128,6 +136,7 @@ namespace PortalRenderCadence
         int networkOriginConsecutiveFrozenFrames = 0;
         int oldOriginConsecutiveFrozenFrames = 0;
         int simulationTimeConsecutiveFrozenFrames = 0;
+        int finalViewAnglesConsecutiveFrozenFrames = 0;
         float rawDeltaLength = 0.0f;
         float originalDeltaLength = 0.0f;
         float appliedDeltaLength = 0.0f;
@@ -138,6 +147,7 @@ namespace PortalRenderCadence
         float networkOriginDeltaLength = 0.0f;
         float oldOriginDeltaLength = 0.0f;
         float simulationTimeDelta = 0.0f;
+        float finalViewAngleDeltaLength = 0.0f;
         float appliedExitNormalDelta = 0.0f;
         float appliedExitTangentDelta = 0.0f;
         Vec3 expectedFrameDelta;
@@ -156,6 +166,8 @@ namespace PortalRenderCadence
     public:
         static constexpr int kCaptureCommandTransitions = 6;
         static constexpr int kMaximumFrames = 192;
+        static constexpr int kFloorWallCaptureCommandTransitions = 32;
+        static constexpr int kFloorWallMaximumFrames = 1024;
         static constexpr float kFreezeEpsilon = 0.001f;
         static constexpr float kUnderSpeedRatio = 0.5f;
 
@@ -163,7 +175,9 @@ namespace PortalRenderCadence
         BeginResult BeginTransaction(
             std::uint32_t transactionId,
             int committedCommandNumber,
-            const Vec3& exitNormal);
+            const Vec3& exitNormal,
+            int captureCommandTransitions = kCaptureCommandTransitions,
+            int maximumFrames = kMaximumFrames);
         RecordResult RecordFrame(const Sample& sample);
 
         bool IsActive() const { return m_active; }
@@ -177,6 +191,7 @@ namespace PortalRenderCadence
         static Vec3 Delta(const Vec3& to, const Vec3& from);
         static float Dot(const Vec3& a, const Vec3& b);
         static float Length(const Vec3& value);
+        static float AngleDeltaLength(const Vec3& to, const Vec3& from);
 
         Sample m_previous;
         Vec3 m_exitNormal;
@@ -192,11 +207,14 @@ namespace PortalRenderCadence
         int m_networkOriginConsecutiveFrozenFrames = 0;
         int m_oldOriginConsecutiveFrozenFrames = 0;
         int m_simulationTimeConsecutiveFrozenFrames = 0;
+        int m_finalViewAnglesConsecutiveFrozenFrames = 0;
         int m_finalViewConsecutiveUnderSpeedFrames = 0;
         bool m_seenEyeHistoryActive = false;
         bool m_postEyeHistory = false;
         bool m_previousFinalViewUnderSpeed = false;
         bool m_hasPrevious = false;
         bool m_active = false;
+        int m_captureCommandTransitions = kCaptureCommandTransitions;
+        int m_maximumFrames = kMaximumFrames;
     };
 }

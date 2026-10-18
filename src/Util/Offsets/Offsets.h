@@ -27,6 +27,7 @@ public:
 	//自行添加的Hook
 	DWORD m_dwRenderView = 0x0;
 	DWORD m_dwIInput = 0x0;
+	DWORD m_dwInputAdjustAngles = 0x0;
 
 	DWORD m_dwTracePlayerBBox = 0x0;
 	DWORD m_dwCategorizePosition = 0x0;

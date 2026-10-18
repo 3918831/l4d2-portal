@@ -1,6 +1,7 @@
 #include "BasePlayer.h"
 
 #include "../../Features/Vars.h"
+#include "../../Portal/PortalNativeDiagnostics.h"
 #pragma warning(push)
 #pragma warning(disable: 4819)
 #include "../../Portal/L4D2_Portal.h"
@@ -8,11 +9,16 @@
 
 using namespace Hooks;
 
+#if PORTAL_RENDER_MODE != 0
+extern bool g_bIsRenderingPortalTexture;
+#endif
+
 void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* edx, Vector& eyeOrigin, Vector& eyeAngles, float& fov)
 {
 	// Preserve the actual CalcPlayerView input for the render-source cadence
 	// diagnostic before the native view calculation mutates it.
 	const Vector calcViewInputEye = eyeOrigin;
+	const Vector calcViewInputAngles = eyeAngles;
 
 	if (pThis && !pThis->deadflag()) //Thanks Spook for telling me to do it here.
 	{
@@ -27,6 +33,18 @@ void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* ed
 		Func.Original<FN>()(pThis, edx, eyeOrigin, eyeAngles, fov);
 	}
 	const Vector originalViewEye = eyeOrigin;
+	const Vector originalViewAngles = eyeAngles;
+	bool diagnosticMainView = true;
+#if PORTAL_RENDER_MODE != 0
+	diagnosticMainView = !g_bIsRenderingPortalTexture;
+#endif
+#if PORTAL_RENDER_MODE == 1
+	diagnosticMainView = diagnosticMainView && G::G_L4D2Portal.m_nPortalRenderDepth == 0;
+#elif PORTAL_RENDER_MODE == 3
+	diagnosticMainView = diagnosticMainView && G::G_L4D2Portal.m_nProcessingDepth == 0;
+#endif
+	if (diagnosticMainView)
+		PortalNativeDiagnostics::CalcView(pThis, originalViewEye, true);
 
 	// Consume the transaction matrix before the geometric entry handoff. This
 	// keeps the stored eye history in physical entry space until Teleport commits,
@@ -45,13 +63,18 @@ void __fastcall BasePlayer::CalcPlayerView::Detour(C_BasePlayer* pThis, void* ed
 		eyeAngles,
 		fov);
 
+	if (diagnosticMainView)
+		PortalNativeDiagnostics::CalcView(pThis, eyeOrigin, false);
 	// Preserve the CalcPlayerView seam separately. The final CViewSetup origin is
 	// sampled later at the main-view submission point, after all view adapters.
 	G::G_L4D2Portal.m_PortalTransition.CapturePortalRenderCadenceCalcView(
 		pThis,
 		calcViewInputEye,
 		originalViewEye,
-		eyeOrigin);
+		eyeOrigin,
+		calcViewInputAngles,
+		originalViewAngles,
+		eyeAngles);
 
 }
 

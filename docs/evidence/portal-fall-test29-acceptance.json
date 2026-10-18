@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "scope": "captured test29 evidence, not universal game acceptance",
+  "build": "pe-6AD2590C",
+  "dllSha256": "30E4237E7E8A610A50A87BEAC7B8D27C6F6D0884B56FD327CA746CC590715A51",
+  "log": {
+    "path": "TestLog/高速穿越连续性修复/29/portal_l4d2_traversal.log",
+    "bytes": 30692462,
+    "lines": 55426,
+    "sha256": "973018387b01fceedd000e6ad9dbbb570d26513af60230c3182cbdae6451f753"
+  },
+  "transactions": 419,
+  "successfulBindings": 419,
+  "summaries": 419,
+  "calls": 744,
+  "candidates": 728,
+  "changed": 342,
+  "notified": 342,
+  "applied": 342,
+  "readback": 342,
+  "rejected": 0,
+  "lifetimeEndReasons": { "native-ground": 16, "new-commit": 396, "dead-or-movetype": 7 },
+  "nativeDiagnosticIntervals": [
+    { "enabled": false, "startLine": 1, "endLine": 4719, "applied": 120 },
+    { "enabled": true, "startLine": 4720, "endLine": 11703, "applied": 95 },
+    { "enabled": false, "startLine": 11704, "endLine": 55426, "applied": 127 }
+  ],
+  "detailedFloorWall": {
+    "transactions": [13, 14, 15, 16],
+    "completeCaptures": 4,
+    "pairedAirborneCommands": 87,
+    "matchingFinalFall": 87,
+    "lateFallErrors": 0,
+    "lateResets": 0,
+    "lateOriginDetails": 101,
+    "lateOriginChanged": 101,
+    "lateOriginStates": { "Interval": 8, "Hermite": 93 },
+    "resetDetailsDropped": 0
+  },
+  "ordinaryFall": { "captures": 1, "pairedAirborneCommands": 4, "matchingFinalFall": 4, "writes": 0 },
+  "vertical3500": {
+    "allCommitsAt3500": 336,
+    "supportedLifetimeCommitsAt3500": 335,
+    "firstSupportedTxn": 79,
+    "lastSupportedTxn": 413,
+    "firstSupportedCmd": 8962,
+    "lastSupportedCmd": 9325,
+    "tickIntervalSeconds": 0.033333,
+    "approxSupportedSpanSeconds": 12.1,
+    "excludedTail": "txn414-419 server moveType=8, no fall write; not a sustained-walk sample"
+  },
+  "manualCoverageUnconfirmed": [],
+  "manualConfirmation": {
+    "date": "2026-10-18",
+    "source": "direct user reply, not inferred from log",
+    "result": "both tested and normal",
+    "scenarios": [
+      "reverse wall jump and bidirectional high-speed airborne traversal",
+      "floor-wall followed by immediate landing with god off, impact/damage normal"
+    ]
+  },
+  "decision": "candidate accepted; manual gates complete; ready for reviewed baseline commit/push"
+}

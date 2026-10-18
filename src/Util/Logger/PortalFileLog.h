@@ -17,6 +17,26 @@ namespace U::PortalFileLog
     inline constexpr bool kCaptureRenderDiagnostics = true;
     inline constexpr bool kSuppressLegacyConsoleNoise = true;
 
+    // Independent of functional fall repair and the existing transaction probe.
+    // Off also prevents the producers from collecting expensive frame evidence.
+    inline bool g_nativeDiagnosticsEnabled = false;
+    inline void SetNativeDiagnosticsEnabled(bool enabled) { g_nativeDiagnosticsEnabled=enabled; }
+    inline bool NativeDiagnosticsEnabled() { return g_nativeDiagnosticsEnabled; }
+    inline bool ShouldCollectNativeDiagnostics(bool transactionDiagnostics,bool clockReady)
+    { return g_nativeDiagnosticsEnabled&&transactionDiagnostics&&clockReady; }
+    inline bool ShouldEmitFallWriteDetail(unsigned printed,bool failed)
+    { return failed||(g_nativeDiagnosticsEnabled&&printed<8); }
+
+    inline constexpr const char* kNativeDetailNeedles[] = {
+        "[PortalNativeCadenceFrame]", "[PortalNativeCadenceStage]",
+        "[PortalNativeCadenceCommand]", "[PortalNativeCadenceCommandBatch]",
+        "[PortalNativeInterpolationFrame]", "[PortalNativePart1Frame]",
+        "[PortalNativeMapFrame]", "[PortalNativeOriginFrame]",
+        "[PortalNativeOriginReset]", "[PortalNativeOriginResetSamples]",
+        "[PortalNativePredictionError]", "[PortalNativePredictionField]",
+        "[PortalNativeFallState]",
+    };
+
     inline constexpr const char* kAlwaysNeedles[] = {
         "PortalFileLog",
         "PortalBsp",
@@ -54,6 +74,10 @@ namespace U::PortalFileLog
         "PortalEyeHistory",
         "PortalProjectedEyeHistoryRebase",
         "PortalEyeShadowPredictor",
+        "[PortalEyeSingleOwner]",
+        "[PortalEyeLeafHandoffProbe]",
+        "[PortalEyeLeafHandoffDecision]",
+        "[PortalEyeReleaseTailProbe]",
         "PortalEyeSafety",
         "PortalPredictionCommandWindow",
         "PortalOfficialCommandEndCandidate",
@@ -62,6 +86,60 @@ namespace U::PortalFileLog
         "PortalServerCommandMovement",
         "PortalGroundLiveCommit",
         "PortalGroundCommitMode",
+        "[PortalInputAdjustAnglesHook]",
+        "[PortalInputAdjustAnglesProbe]",
+        "[PortalInputRollClamp]",
+        "[PortalViewReorientationBegin]",
+        "[PortalViewReorientationFrame]",
+        "[PortalViewReorientationEnd]",
+        "[PortalViewReorientationReset]",
+        "PortalFloorWallBegin",
+        "[PortalFloorWallCommand]",
+        "[PortalFloorWallServerCommand]",
+        "[PortalNativeCadenceBegin]",
+        "[PortalNativeCadenceFrame]",
+        "[PortalNativeCadenceStage]",
+        "[PortalNativeCadenceCommand]",
+        "[PortalNativeCadenceSummary]",
+        "[PortalNativeCadenceCvar]",
+        "[PortalNativeInterpolationHook]",
+        "[PortalNativeInterpolationFrame]",
+        "[PortalNativePart1Hook]",
+        "[PortalNativePart1Frame]",
+        "[PortalNativePart1Summary]",
+        "[PortalNativeMapHook]",
+        "[PortalNativeMapFrame]",
+        "[PortalNativeMapSummary]",
+        "[PortalNativeOriginHook]",
+        "[PortalNativeOriginFrame]",
+        "[PortalNativeOriginSummary]",
+        "[PortalNativeOriginResetHook]",
+        "[PortalNativeOriginReset]",
+        "[PortalNativeOriginResetSamples]",
+        "[PortalNativeOriginResetSummary]",
+        "[PortalNativeOriginResetCaller]",
+        "[PortalNativeResetLatchedHook]",
+        "[PortalNativeOriginResetParentCaller]",
+        "[PortalNativePredictionFieldHook]",
+        "[PortalNativeFallStateProbe]",
+        "[PortalFallWriteHook]",
+        "[PortalFallWriteBind]",
+        "[PortalFallWrite]",
+        "[PortalFallWriteSummary]",
+        "[PortalNativeFallState]",
+        "[PortalNativeFallStateSummary]",
+        "[PortalNativePredictionField]",
+        "[PortalNativePredictionFieldSummary]",
+        "[PortalNativePredictionFieldAggregate]",
+        "[PortalNativePredictionErrorHook]",
+        "[PortalNativePredictionError]",
+        "[PortalNativePredictionErrorSummary]",
+        "[PortalNativePredictionErrorEntity]",
+        "[PortalNativeCadenceCommandBatch]",
+        "PortalTraversalCadence",
+        "PortalTraversalGate",
+        "PortalTraversalHistoryRebase",
+        "PortalExitRearmCatchup",
         "PortalVisualMarker",
         "PortalExitRearm",
         "PortalExitState",
@@ -114,6 +192,10 @@ namespace U::PortalFileLog
         if (!text)
             return false;
 
+        if (!g_nativeDiagnosticsEnabled && ContainsAny(text, kNativeDetailNeedles,
+            sizeof(kNativeDetailNeedles) / sizeof(kNativeDetailNeedles[0])))
+            return false;
+
         if (ContainsAny(text, kAlwaysNeedles, sizeof(kAlwaysNeedles) / sizeof(kAlwaysNeedles[0])))
             return true;
 
@@ -149,6 +231,10 @@ namespace U::PortalFileLog
 
         if (ContainsAny(text, kConsoleSummaryNeedles, sizeof(kConsoleSummaryNeedles) / sizeof(kConsoleSummaryNeedles[0])))
             return false;
+
+        // Suppression must not depend on whether file detail is currently on.
+        if (ContainsAny(text, kNativeDetailNeedles, sizeof(kNativeDetailNeedles) / sizeof(kNativeDetailNeedles[0])))
+            return true;
 
         // Focused traversal/BSP/render diagnostics have already been routed to
         // the dedicated file. LogError bypasses this console policy entirely.

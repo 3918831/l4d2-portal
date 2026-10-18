@@ -265,7 +265,7 @@ void PortalBspPhase1::LogStatus(const char* reason)
 {
     const PortalBrushBinding& blue = G::PortalBspCollisionCarver.GetBinding(PortalBrushOwner::Blue);
     const PortalBrushBinding& orange = G::PortalBspCollisionCarver.GetBinding(PortalBrushOwner::Orange);
-    U::LogInfo("[PortalBsp][Phase1Status] reason=%s enabled=%s carvingActive=%s pairResolved=%s queryReady=%s generation=%u modified=%zu clearanceMode=%s placementFloorSnap=%s placementFloorSnapHalfHeight=%.3f placementFloorSnapHalfHeightSource=portal-sdk-2013-provisional placementFloorSnapMaxDistance=%.3f nearClipFix=%s exactExitVisualGuard=%s entryCameraHandoff=%s eyeHistory=%s shadowPredictor=%s shadowReleaseTail=%s projectedHistoryRebase=%s projectedHistoryRebaseScope=projected-commit-render-eye-history-only shadowPredictorScope=render-eye-only shadowPredictorHorizon=one-runtime-tick liveMovementMutation=false serverCommandAngleFix=%s transactionDiagnostics=%s predictionDiagnosticWindow=commit-plus-1 groundLiveCommit=%s groundLiveCommitScope=ground-only-observed-crossing remoteView=OfficialExactCameraClipMinus0.5 nearPlaneRenderFix=OfficialStencilProxyOnly depthFogRepair=deferred blue(resolved=%s brush=%d contents=0x%08X generation=%u) orange(resolved=%s brush=%d contents=0x%08X generation=%u) legacyCollisionBypass=false movementMutation=false controlledNoclip=false teleportPredictionSync=%s.\n",
+    U::LogInfo("[PortalBsp][Phase1Status] reason=%s enabled=%s carvingActive=%s pairResolved=%s queryReady=%s generation=%u modified=%zu clearanceMode=%s placementFloorSnap=%s placementFloorSnapHalfHeight=%.3f placementFloorSnapHalfHeightSource=portal-sdk-2013-provisional placementFloorSnapMaxDistance=%.3f nearClipFix=%s exactExitVisualGuard=%s entryCameraHandoff=%s eyeHistory=%s shadowPredictor=%s crossLeafHandoff=%s commitSeed=%s commitSeedScope=first-render-eye-only shadowReleaseTail=%s singleEyeHistory=%s activeEyeOwner=%s projectedHistoryRebase=%s projectedHistoryRebaseScope=projected-commit-render-eye-history-only shadowPredictorScope=control-render-eye-only shadowPredictorHorizon=one-runtime-tick liveMovementMutation=false serverCommandAngleFix=%s transactionDiagnostics=%s predictionDiagnosticWindow=commit-plus-1 floorWallDiagnosticWindow=commit-through-plus-32 floorWallDiagnosticScope=floor-entry-to-wall-exit-only groundLiveCommit=%s groundLiveCommitScope=ground-only-observed-crossing remoteView=OfficialExactCameraClipMinus0.5 nearPlaneRenderFix=OfficialStencilProxyOnly depthFogRepair=deferred blue(resolved=%s brush=%d contents=0x%08X generation=%u) orange(resolved=%s brush=%d contents=0x%08X generation=%u) legacyCollisionBypass=false movementMutation=false controlledNoclip=false teleportPredictionSync=%s.\n",
         reason ? reason : "unknown",
         BoolText(G::PortalBspCollisionCarver.IsPhase1Enabled()),
         BoolText(G::PortalBspCollisionCarver.IsCarvingActive()),
@@ -283,7 +283,12 @@ void PortalBspPhase1::LogStatus(const char* reason)
         BoolText(PortalTransitionDecision::GetEntryCameraHandoffEnabled()),
         BoolText(PortalTransitionDecision::GetPortalEyeContinuityEnabled()),
         BoolText(PortalTransitionDecision::GetPortalEyeShadowPredictorEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalEyeCrossLeafHandoffEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalVisualCommitSeedEnabled()),
         BoolText(PortalTransitionDecision::GetPortalEyeShadowReleaseTailEnabled()),
+        BoolText(PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled()),
+        PortalTransitionDecision::GetPortalEyeSingleOwnerEnabled()
+            ? "state-only" : "state-plus-shadow",
         BoolText(PortalTransitionDecision::GetProjectedEyeHistoryRebaseEnabled()),
         BoolText(PortalTransitionDecision::GetServerPortalCommandAngleFixEnabled()),
         BoolText(PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled()),

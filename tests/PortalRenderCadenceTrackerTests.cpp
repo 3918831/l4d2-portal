@@ -40,6 +40,10 @@ namespace
         sample.finalViewEye = sample.appliedEye;
         sample.playerOrigin = { appliedX, 0.0f, 0.0f };
         sample.velocity = { 600.0f, 0.0f, 0.0f };
+        sample.calcViewInputAngles = { 0.0f, appliedX, 0.0f };
+        sample.originalViewAngles = sample.calcViewInputAngles;
+        sample.appliedViewAngles = sample.calcViewInputAngles;
+        sample.finalViewAngles = sample.calcViewInputAngles;
         return sample;
     }
 }
@@ -121,6 +125,62 @@ int main()
     ExpectNear(completed.summary.maxOriginDeltaLength, 20.0f,
         "the summary must retain the largest entity-origin jump");
     Expect(!tracker.IsActive(), "completed capture must disarm itself");
+
+    PortalRenderCadence::Tracker extendedTracker;
+    Expect(extendedTracker.BeginTransaction(
+        11u,
+        90,
+        { 1.0f, 0.0f, 0.0f },
+        32,
+        1024).accepted,
+        "a floor-to-wall traversal must arm an explicitly extended cadence window");
+    extendedTracker.RecordFrame(MakeSample(500, 600, 90, 0.0f, 0.0f, 0.0f));
+    PortalRenderCadence::RecordResult extendedResult;
+    for (int delta = 1; delta <= 31; ++delta)
+    {
+        extendedResult = extendedTracker.RecordFrame(MakeSample(
+            500 + delta,
+            600 + delta,
+            90 + delta,
+            static_cast<float>(delta),
+            static_cast<float>(delta),
+            static_cast<float>(delta)));
+    }
+    Expect(extendedTracker.IsActive() && !extendedResult.completed,
+        "the extended cadence window must remain active through command plus thirty-one");
+    extendedResult = extendedTracker.RecordFrame(MakeSample(
+        532, 632, 122, 32.0f, 32.0f, 32.0f));
+    Expect(extendedResult.completed && !extendedTracker.IsActive(),
+        "the extended cadence window must complete on its thirty-second command transition");
+
+    PortalRenderCadence::Tracker angleTracker;
+    Expect(angleTracker.BeginTransaction(
+        12u,
+        130,
+        { 1.0f, 0.0f, 0.0f }).accepted,
+        "view-angle cadence diagnostics must arm for a valid traversal");
+    PortalRenderCadence::Sample angleBaseline =
+        MakeSample(700, 800, 130, 0.0f, 0.0f, 0.0f);
+    angleBaseline.finalViewAngles = { 0.0f, 179.0f, 0.0f };
+    angleTracker.RecordFrame(angleBaseline);
+    PortalRenderCadence::Sample angleWrap =
+        MakeSample(701, 800, 130, 0.1f, 0.1f, 0.1f);
+    angleWrap.finalViewAngles = { 0.0f, -179.0f, 0.0f };
+    const PortalRenderCadence::RecordResult wrappedAngle =
+        angleTracker.RecordFrame(angleWrap);
+    ExpectNear(wrappedAngle.finalViewAngleDeltaLength, 2.0f,
+        "view-angle cadence must normalize the yaw wrap instead of reporting a 358-degree jump");
+    Expect(!wrappedAngle.finalViewAnglesFrozen,
+        "a normalized two-degree view-angle step must not be classified as frozen");
+    PortalRenderCadence::Sample frozenAngle = angleWrap;
+    frozenAngle.frameCount = 702;
+    frozenAngle.appliedEye.x += 0.1f;
+    frozenAngle.finalViewEye.x += 0.1f;
+    const PortalRenderCadence::RecordResult frozenAngleResult =
+        angleTracker.RecordFrame(frozenAngle);
+    Expect(frozenAngleResult.finalViewAnglesFrozen
+            && frozenAngleResult.finalViewAnglesConsecutiveFrozenFrames == 1,
+        "unchanged final view angles must begin an independent angular freeze run");
 
     PortalRenderCadence::Tracker speedTracker;
     Expect(speedTracker.BeginTransaction(

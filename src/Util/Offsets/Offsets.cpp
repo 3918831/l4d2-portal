@@ -56,6 +56,13 @@ void CUtil_Offsets::Init()
 	if (const DWORD dwIInput = U::Pattern.Find(_("client.dll"), _("8B 0D ? ? ? ? 8B 01 8B 40 0C 52 8B 55 08")))
 		m_dwIInput = (dwIInput + 0x2);
 
+	m_dwInputAdjustAngles = U::Pattern.Find(_("client.dll"), _("55 8B EC 83 EC 0C D9 45 0C 56 57 8B 7D 08 51 D9 1C 24 57 8B F1 E8 ? ? ? ? D9 55 0C D9 EE DF F1 DD D8 0F 83 ? ? ? ? 8B 0D ? ? ? ? 8B 01 8B 40 4C 8D 55 F4 52 FF D0"));
+	if (!m_dwInputAdjustAngles)
+		U::LogError("[PortalInputAdjustAnglesHook] target=CInput::AdjustAngles signatureResolved=false installed=false mutation=false.\n");
+	else
+		U::LogInfo("[PortalInputAdjustAnglesHook] target=CInput::AdjustAngles signatureResolved=true address=%p mutation=false.\n",
+			reinterpret_cast<void*>(m_dwInputAdjustAngles));
+
 	XASSERT(m_dwStartDrawing == 0x0);
 	XASSERT(m_dwFinishDrawing == 0x0);
 	XASSERT(m_dwClientMode == 0x0);

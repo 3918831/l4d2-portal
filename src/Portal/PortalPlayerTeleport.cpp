@@ -2,6 +2,7 @@
 #include "PortalPhysicsMode.h"
 #include "PortalTransform.h"
 #include "PortalTransitionDecision.h"
+#include "PortalFallWrite.h"
 
 #include "../SDK/L4D2/Entities/C_TerrorPlayer.h"
 #include "../SDK/L4D2/Includes/edict.h"
@@ -369,6 +370,7 @@ bool PortalPlayerTeleport::Commit(
     }
 
     teleport(serverPlayer, &origin, &angles, &velocity);
+    PortalFallWrite::Arm(serverPlayer,traversalEpoch,commandNumber);
 
     if (PortalTransitionDecision::GetPortalTransactionDiagnosticsEnabled())
     {

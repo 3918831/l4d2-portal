@@ -7,6 +7,7 @@
 #include "../../Portal/PortalBspData.h"
 #include "../../Portal/PortalBspCollisionCarver.h"
 #include "../../Portal/PortalBspPhase1.h"
+#include "../../Portal/PortalNativeDiagnostics.h"
 #include "../../SDK/L4D2/Interfaces/RenderView.h"
 #include "../../SDK/L4D2/Interfaces/EngineClient.h"
 #include "../../SDK/L4D2/Interfaces/ModelInfo.h"
@@ -138,7 +139,14 @@ void __fastcall BaseClient::LevelShutdown::Detour(void* ecx, void* edx)
 
 void __fastcall BaseClient::FrameStageNotify::Detour(void* ecx, void* edx, ClientFrameStage_t curStage)
 {
+	if (curStage == FRAME_RENDER_START)
+		PortalNativeDiagnostics::RenderStart(true);
 	Table.Original<FN>(Index)(ecx, edx, curStage);
+	if (curStage == FRAME_RENDER_START)
+	{
+		PortalNativeDiagnostics::RenderStart(false);
+		G::G_L4D2Portal.m_PortalTransition.UpdatePortalViewReorientationAtRenderStart();
+	}
 }
 
 //void __fastcall BaseClient::RenderView::Detour(void* ecx, void* edx, CViewSetup& setup, int nClearFlags, int whatToDraw)

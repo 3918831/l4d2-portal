@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to execute this approved staged plan. Steps use checkbox syntax. Manual game acceptance gates are explicit user-owned dependencies; do not bypass them to finish implementation in one turn.
 
-**Goal:** 将第27轮已证实有效的fall修复形成经过回归、可维护且可复用的代码和技术文档资产，并提交推送到当前远端分支。
+**Goal:** 将第27轮已证实有效的fall修复形成经过回归、可维护且可复用的代码和技术文档资产，并提交推送到 BSP 主验证分支 `codex/bsp-portal-traversal`。
 
 **Architecture:** 保持原生有符号fall赋值和原生网络通知，不增加镜头补偿。先冻结已验证DLL补旧场景回归，再收敛默认值/状态报告/诊断体积，最后对候选产物短回归及累计修改审查后上库。
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 当前分支 `codex/portal-official-mechanism`；保留现有未提交修改，不切换分支或另造基线。
+- 成果归属 `codex/bsp-portal-traversal`。初始计划错误地把当时检出的 `codex/portal-official-mechanism` 写成禁止切换的目标；用户2026-10-18已明确纠正。保留全部基线内容及另一方案研究，不另造或混合算法基线。
 - 本轮先复用build `pe-6AD1B572`，禁止在第28轮回归前改变DLL或默认值。
 - 不修改origin/velocity/ground/movetype/camera/Reset；不重启旧noclip、movement mutation、出口push、PortalMaskRepair。
 - 人工测试由用户完成，控制台指令以英文分号结束；不要求高速循环过程中绑定/按主观标记。
@@ -69,8 +69,8 @@
 - [x] 新建portal-signed-fall-continuity-technical-asset.zh-CN.md，覆盖因果链、语义/接缝、通知、负值、生命周期、回退、性能、适用范围及不支持热卸载的继承限制。
 - [x] 对HEAD cd636ba累计已跟踪diff和未跟踪src/tests分组审查；纳入/排除清单见portal-fall-baseline-worktree-audit.zh-CN.md。没有暂存、没有删除其它个人研究。
 - [x] 2026-10-18重新29/29 runner、Debug x86通过；两轴静态审查无新阻塞代码缺陷，冷却文档P2已修复；流式工具重放及文档链接复核。原始日志/二进制/本机配置不作为待提交内容。
-- [ ] 在当前分支提交重大阶段基线并普通push到已核实upstream；核对本地/远端提交一致后报告commit与保留问题。
+- [x] 完成重大阶段基线提交 `eec85ad`，保留完整代码、测试、技术文档。首次推送目标错误；根据用户明确纠正，将原提交归入 BSP 分支，撤销误创建的 official-mechanism 远端引用，具体安全条件见累计审查第5节。
 
-## 当前暂停点
+## 验收结果与分支纠正
 
-第29轮日志及补充人工确认均已通过；文档/累计审查已完成，已测DLL哈希不变。正在完成明确清单的暂存复核与最终commit/push。origin当前尚无同名远端分支，将普通推送创建codex/portal-official-mechanism并设置upstream；不改bsp分支，不force push，不建PR。实际完成结果记入本机执行账本和最终回复。
+第29轮日志及补充人工确认均已通过；文档/累计审查和基线提交已完成，游戏目录保留已实测DLL。最终交付目标明确为 `origin/codex/bsp-portal-traversal`，本地也回到该分支继续工作。另一方案保留其原始本地引用与未提交研究；误创建的远端引用只有在精确lease匹配且 BSP 内容已保存后才撤销，不覆盖他人提交、不创建PR。实际远端完成结果记入本机执行账本和最终回复。

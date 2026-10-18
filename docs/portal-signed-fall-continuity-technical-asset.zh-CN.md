@@ -2,6 +2,8 @@
 
 日期：2026-10-18。适用候选：`pe-6AD2590C`，Debug x86，单人localserver。
 
+资产所属基线：`codex/bsp-portal-traversal`；不是另一条 `codex/portal-official-mechanism` 方案的实现交付。本文的官方状态语义、因果证据和能力验证契约可独立复用；跨方案入口见[连续性技术资产复用索引](portal-continuity-cross-scheme-reference.zh-CN.md)。
+
 本文件提炼实现契约，不替代各轮原始分析。总路线见[物理穿越与连续性总结](portal-bsp-physical-traversal-and-continuity-technical-summary.zh-CN.md)，因果A/B见[第27轮](portal-floorwall-test27-fall-write-ab-analysis.zh-CN.md)，回归见[第28轮](portal-floorwall-test28-baseline-regression-analysis.zh-CN.md)及[第29轮](portal-floorwall-test29-candidate-acceptance-analysis.zh-CN.md)。
 
 ## 1. 真正修复的是什么
@@ -145,3 +147,11 @@ Hook由进程寿命持有：部分原生Hook因运行态身份/懒初始化而�
 **不支持运行中FreeLibrary热卸载或重复注入。** 现有工程缺少统一Hook禁用/拆除通路，DllMain的brush恢复不等于全部Hook已撤销；这是继承的工程限制，不能声称历史设计中的DLL-unload要求已满足。换DLL必须完全退出游戏再启动。
 
 后续应分开推进：门放置失败/brush绑定、孔径内局部开洞、首次资源预热、过程寿命Hook清理和公共内存校验模块。都不是本次fall问题再次添加补偿的理由。
+
+## 10. 给后续复刻方案的迁移契约
+
+优先迁移的是“预测参与状态必须随出口运动保持两端一致”，不是某个固定 getter Hook。另一方案若已在原生 PreThink/PlayerMove 等合法路径刷新有符号 fall 并完成网络通知，不应再叠加本 adapter；先用同cmd、同阶段证据确认是否还存在差异。
+
+可直接作为设计和测试输入的资产包括：负 fall 与 `-MoveData.z` 语义、通知→存储→读回契约、身份/命令/生命周期隔离、正常下落不接管、落地伤害回归，以及 fall error→Reset→origin 夹取的取证方法。具体二进制指纹、offset、返回地址、插入点和作用域覆盖必须按新接入路径重新验证；不能将本文某个地址视为通用 API。
+
+当前修复不读写 brush 数据，因此其状态一致性结论可以帮助其它碰撞方案；但“可借鉴”不等于“新方案已验证”。复用后仍须独立完成同门位 A/B、普通下落/立即落地、双向墙门、3500上下循环和失配拒绝测试。保留正常预测纠错，不用禁用 Reset 或附加镜头平滑代替状态修复。

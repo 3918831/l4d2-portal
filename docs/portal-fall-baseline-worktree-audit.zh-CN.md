@@ -1,16 +1,16 @@
 # Portal fall 候选基线：累计未提交改动审查
 
-日期：2026-10-18。分支 `codex/portal-official-mechanism`。
+日期：2026-10-18。方案/交付分支 `codex/bsp-portal-traversal`；初审工作区误处于 `codex/portal-official-mechanism`，归属纠正见第5节。
 
 ## 1. 固定范围与结论
 
-固定点：`cd636baeb5baf2568b2ed1d29827ac38a8439d1e`（HEAD）。用户明确要求“累计未提交改动”，因此使用 `git diff HEAD --` 加 `git ls-files --others --exclude-standard`，不是空的 `HEAD...HEAD`，也不是只对比第28轮备份。
+固定点：`cd636baeb5baf2568b2ed1d29827ac38a8439d1e`（审查时HEAD）。用户明确要求“累计未提交改动”，因此使用 `git diff HEAD --` 加 `git ls-files --others --exclude-standard`，不是空的 `HEAD...HEAD`，也不是只对比第28轮备份。
 
 开始审查时：33个已跟踪文件修改，4003行增加/110行删除；其中src/tests为30个已跟踪文件，另有52个未跟踪源代码/测试/fixture。本文及第29轮总结/证据工具是在审查期间新增的文档资产，不计入初始数字。
 
 **累计代码具备整理为候选基线的条件；没有确认新的阻塞性正确性缺陷。** 不能把这些文件全称为“最后一轮fall补丁”：它还包括早期高速循环、角度回正、单眼位实验和多轮只读原生诊断。第29轮证明的是已有部署组合的实际运行，不证明每个默认关闭的实验均有效。
 
-初审阶段暂缓commit/push，等待完整反向墙门动作和立即落地冲击的覆盖确认。2026-10-18用户已明确回复“两项都测过且正常”，人工关口关闭；现在可按本清单提交并推送当前分支，不省略或冒充日志证据。
+初审阶段暂缓commit/push，等待完整反向墙门动作和立即落地冲击的覆盖确认。2026-10-18用户已明确回复“两项都测过且正常”，人工关口关闭；可按本清单提交并推送 BSP 主验证分支，不省略或冒充日志证据。
 
 ## 2. 代码按功能归属
 
@@ -86,4 +86,18 @@ ClientMode在HEAD已经初始化；本轮累计diff只是更新旧“会不停�
 
 本次明确暂存清单共129文件：55个源代码/项目文件、28个测试/fixture/runner/重放工具、46个技术文档/证据文件。暂存差异无TestLog、Debug二进制、本机配置或独立research目录。
 
-最终人工覆盖已确认；提交前重新核对明确文件清单/暂存diff并执行验证，再普通commit/push当前分支。远端核实：`origin`为`3918831/l4d2-portal`，当前`codex/portal-official-mechanism`尚无远端同名分支，因此首次普通推送创建同名分支并设置upstream；不推到fork-origin、不改动远端bsp分支、不合并或创建PR。
+最终人工覆盖已确认；明确文件清单/暂存diff和验证通过后形成基线提交 `eec85ad760ed5741f42038410e8a08c27fe31147`。首次推送误创建了 `origin/codex/portal-official-mechanism`；这不是用户期望的成果归属，按下节纠正。`origin` 为 `3918831/l4d2-portal`，`fork-origin` 不在本次操作范围。
+
+## 5. 分支归属纠正
+
+用户2026-10-18明确：本次是 BSP 清空方案的连续性技术积累，应交付到 `codex/bsp-portal-traversal`；`codex/portal-official-mechanism` 属于另一套大方案。不能把“当前检出的分支”当成“成果应归属的分支”。
+
+纠正前只读核实：
+
+- 本地 BSP 分支为 `cd636ba`，是基线 `eec85ad` 的直接父节点；远端 BSP 为 `7ae34cd`，其间两个既有提交 `36a5fd4`、`cd636ba` 是本 BSP 探索的视角回正设计/计划。
+- official-mechanism 本地分支创建于 `cd636ba`；远端同名分支原先不存在，由本次误推创建，当前仍为 `eec85ad`，没有他人追加提交。
+- 28个独立研究文件未跟踪，另有忽略的本机执行账本/测试日志，全部保持原状，不混入迁移。
+
+因此可保持基线提交标识和内容，直接快进 BSP 分支，不需要 cherry-pick、代码冲突解决或重新实测。归属纠正只补文档；源代码、测试和游戏目录DLL均不改变。远端 BSP 普通快进推送成功后，使用期望旧值为完整 `eec85ad` 的 lease 删除误创建的远端分支；本地 official-mechanism 引用恢复 `cd636ba`，不删另一方案研究文件。远端若发生任何新变化，拒绝覆盖并停止核对。
+
+本轮同时补充[跨方案技术资产复用索引](portal-continuity-cross-scheme-reference.zh-CN.md)。原始129文件基线、官方语义/运行态适配界限和证伪过程完整保留；不是简单撤销代码，更不是把 whole-brush 或 shadow predictor 宣称为官方完整机制。

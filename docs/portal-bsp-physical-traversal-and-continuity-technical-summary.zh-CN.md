@@ -2,7 +2,7 @@
 
 初始基线日期：2026-08-06；最新验收整理：2026-10-18。
 
-初始分支：`codex/bsp-portal-traversal`；当前累计候选分支：`codex/portal-official-mechanism`。
+方案与基线归属：`codex/bsp-portal-traversal`。`codex/portal-official-mechanism` 是另一套独立复刻方案，不是本 BSP 清空方案的交付分支。2026-10-18 对误提交/误推送的归属纠正见[累计审查](portal-fall-baseline-worktree-audit.zh-CN.md#5-分支归属纠正)。
 
 阶段定位：单人、local listen server、世界 BSP brush 上的玩家物理穿越重大基线。
 
@@ -18,6 +18,8 @@
 6. 可回滚、可诊断、可重复实测的基线。
 
 本文既记录最终实现，也记录关键探索、被证伪路径和后续限制，避免未来重新走回旧 noclip、movement mutation、出口 push 或 `PortalMaskRepair`。
+
+面向其它复刻方案，优先阅读[连续性技术资产复用索引](portal-continuity-cross-scheme-reference.zh-CN.md)：它将官方语义、L4D2 接入适配、已验证结论与被证伪实验分开，避免把本长文中的历史实验当作当前推荐实现。
 
 ## 2. 当前结论
 
@@ -260,7 +262,9 @@ server `Teleport` 可以正确变换实体 velocity，但下一条 `PlayerRunCom
 
 ### 9.2 Shadow predictor
 
-最终有效因子是 render-eye-only shadow predictor：
+本节记录早期墙门空中基线及后续 tail 实验，**不是所有实验仍生效的当前开关清单**。`portal_visual_convergenttail` 后续在第12轮被证伪并删除；单眼位历史实验默认关闭，见第12节时间线及[复用索引](portal-continuity-cross-scheme-reference.zh-CN.md)。Shadow predictor 是本工程适配，不应称为官方完整预测实现。
+
+早期有效因子是 render-eye-only shadow predictor：
 
 - 以已提交的门对变换和当前 velocity 为输入；
 - 只在一个 runtime tick 的有界 horizon 内外推；

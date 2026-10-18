@@ -1,6 +1,6 @@
 # 第29轮：默认 fall 修复与诊断隔离的候选验收
 
-日期：2026-10-18。分支：`codex/portal-official-mechanism`。
+日期：2026-10-18。基线归属：`codex/bsp-portal-traversal`。分析时工作区曾停留在 `codex/portal-official-mechanism`，不代表成果属于该独立方案；分支纠正见[累计审查](portal-fall-baseline-worktree-audit.zh-CN.md#5-分支归属纠正)。
 
 ## 1. 结论与决策
 
@@ -97,4 +97,4 @@ txn18–419共有402次竖直循环提交。txn79–414的提交速度为3500，
 
 两轴独立审查未确认新的阻塞性代码缺陷；文档中的时间冷却旧描述已校正。过程寿命Hook、无安全热卸载、内存校验代码重复、活动scope内切诊断的自动集成覆盖仍有限，均明确记录在[累计审查](portal-fall-baseline-worktree-audit.zh-CN.md)。
 
-初审阶段未commit/push；现用户已补齐两项人工确认，转入按明确文件白名单提交并推送当前分支。原始日志、二进制、本机权限或其它研究项目不纳入。实际提交标识和远端同步结果以收尾记录及Git引用为准。
+初审阶段未commit/push；用户补齐两项人工确认后，累计代码/文档形成 `eec85ad` 基线提交。其首次推送错误地使用了工作区所在的 official-mechanism 分支；用户明确要求归入 BSP 主验证分支，因此保留提交内容并迁移至 `codex/bsp-portal-traversal`。原始日志、二进制、本机权限或其它研究项目不纳入。实际远端同步结果以收尾记录及Git引用为准；代码和第29轮实测结论不因分支迁移改变。
